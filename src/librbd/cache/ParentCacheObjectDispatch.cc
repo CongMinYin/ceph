@@ -32,6 +32,7 @@ ParentCacheObjectDispatch<I>::ParentCacheObjectDispatch(
   ceph_assert(m_image_ctx->data_ctx.is_valid());
   std::string controller_path =
     ((CephContext*)(m_image_ctx->cct))->_conf.get_val<std::string>("immutable_object_cache_sock");
+  // 创建client， client sever模式
   m_cache_client = new CacheClient(controller_path.c_str(), m_image_ctx->cct);
 }
 
@@ -40,6 +41,7 @@ ParentCacheObjectDispatch<I>::~ParentCacheObjectDispatch() {
     delete m_cache_client;
 }
 
+// 这个是在构建分发器对象的地方调用的
 template <typename I>
 void ParentCacheObjectDispatch<I>::init(Context* on_finish) {
   auto cct = m_image_ctx->cct;
@@ -58,6 +60,7 @@ void ParentCacheObjectDispatch<I>::init(Context* on_finish) {
   });
 
   m_connecting.store(true);
+  // 发送请求之前先创建session，通过sesion实现hook与server的请求发送和命令执行
   create_cache_session(create_session_ctx, false);
 
   m_image_ctx->io_object_dispatcher->register_object_dispatch(this);
@@ -111,11 +114,12 @@ bool ParentCacheObjectDispatch<I>::read(
       oid, object_off, object_len](ObjectCacheRequest* ack) {
      handle_read_cache(ack, object_off, object_len, read_data,
                        dispatch_result, on_dispatched);
-  });
+  });// 回调handle_read_cache
 
   m_cache_client->lookup_object(m_image_ctx->data_ctx.get_namespace(),
                                 m_image_ctx->data_ctx.get_id(),
                                 (uint64_t)snap_id, oid, std::move(ctx));
+  // 查找对象，找到后回调ctx函数，ctx函数回调handle_read_cache
   return true;
 }
 
@@ -127,6 +131,7 @@ void ParentCacheObjectDispatch<I>::handle_read_cache(
   auto cct = m_image_ctx->cct;
   ldout(cct, 20) << dendl;
 
+  //如果不是正确的读请求回复，回到dados层分配到下一层
   if(ack->type != RBDSC_READ_REPLY) {
     // go back to read rados
     *dispatch_result = io::DISPATCH_RESULT_CONTINUE;
@@ -134,6 +139,7 @@ void ParentCacheObjectDispatch<I>::handle_read_cache(
     return;
   }
 
+  // 如果ack是读请求回复，继续执行
   ceph_assert(ack->type == RBDSC_READ_REPLY);
   std::string file_path = ((ObjectCacheReadReplyData*)ack)->cache_path;
   ceph_assert(file_path != "");
@@ -151,6 +157,7 @@ void ParentCacheObjectDispatch<I>::handle_read_cache(
   on_dispatched->complete(r);
 }
 
+// 注册hook暂时没什么用
 template <typename I>
 int ParentCacheObjectDispatch<I>::handle_register_client(bool reg) {
   auto cct = m_image_ctx->cct;
@@ -162,6 +169,7 @@ int ParentCacheObjectDispatch<I>::handle_register_client(bool reg) {
   return 0;
 }
 
+// 创建session
 template <typename I>
 int ParentCacheObjectDispatch<I>::create_cache_session(Context* on_finish, bool is_reconnect) {
   auto cct = m_image_ctx->cct;
@@ -206,6 +214,7 @@ int ParentCacheObjectDispatch<I>::create_cache_session(Context* on_finish, bool 
   return 0;
 }
 
+// 读取对象，看起来好像只是读取了头部
 template <typename I>
 int ParentCacheObjectDispatch<I>::read_object(
         std::string file_path, ceph::bufferlist* read_data, uint64_t offset,

@@ -84,6 +84,7 @@ void CacheServer::accept() {
         boost::asio::placeholders::error));
 }
 
+//接收了就执行接收的回调
 void CacheServer::handle_accept(CacheSessionPtr new_session,
                                 const boost::system::error_code& error) {
   ldout(cct, 20) << dendl;

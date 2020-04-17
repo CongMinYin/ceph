@@ -15,20 +15,24 @@ class ImageCtx;
 
 namespace cache {
 
+// 声明模板函数，默认为ImageCtx类型，不传参的话默认这个,看起来ImageCtx通用来作为此类模板的默认类型
 template <typename ImageCtxT = ImageCtx>
 class ParentCacheObjectDispatch : public io::ObjectDispatchInterface {
-  // mock unit testing support
+  // mock（模拟） unit testing support
   typedef cache::TypeTraits<ImageCtxT> TypeTraits;
   typedef typename TypeTraits::CacheClient CacheClient;
 
 public:
+  // 构造一个对象分发器对象
   static ParentCacheObjectDispatch* create(ImageCtxT* image_ctx) {
     return new ParentCacheObjectDispatch(image_ctx);
   }
 
+  // override显示声明需要在派生类重写此函数，否则编译器报错
   ParentCacheObjectDispatch(ImageCtxT* image_ctx);
   ~ParentCacheObjectDispatch() override;
 
+  // 对象分发类的层级，与rbd分发机制有关
   io::ObjectDispatchLayer get_object_dispatch_layer() const override {
     return io::OBJECT_DISPATCH_LAYER_PARENT_CACHE;
   }
@@ -37,7 +41,8 @@ public:
   void shut_down(Context* on_finish) {
     m_image_ctx->op_work_queue->queue(on_finish, 0);
   }
-
+  
+  //目前只实现了read，其他操作没有实现，return false，会继续下发到下一层
   bool read(
       uint64_t object_no, uint64_t object_off, uint64_t object_len,
       librados::snap_t snap_id, int op_flags,
@@ -46,6 +51,7 @@ public:
       io::DispatchResult* dispatch_result, Context** on_finish,
       Context* on_dispatched) override;
 
+  //其他操作直接return false，如何rbd的分发器分发到下一层
   bool discard(
       uint64_t object_no, uint64_t object_off, uint64_t object_len, 
       const ::SnapContext &snapc, int discard_flags,

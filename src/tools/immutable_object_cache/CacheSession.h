@@ -1,6 +1,6 @@
 // -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
 // vim: ts=8 sw=2 smarttab
-
+// 一个session就是一个链接， accept -> connection
 #ifndef CEPH_CACHE_SESSION_H
 #define CEPH_CACHE_SESSION_H
 
@@ -38,8 +38,8 @@ class CacheSession : public std::enable_shared_from_this<CacheSession> {
 
  private:
   stream_protocol::socket m_dm_socket;
-  ProcessMsg m_server_process_msg;
   CephContext* m_cct;
+  ProcessMsg m_server_process_msg;
 
   bufferptr m_bp_header;
 };

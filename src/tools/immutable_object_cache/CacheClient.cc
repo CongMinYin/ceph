@@ -18,18 +18,21 @@ namespace immutable_obj_cache {
       m_dm_socket(m_io_service), m_ep(stream_protocol::endpoint(file)),
       m_io_thread(nullptr), m_session_work(false), m_writing(false),
       m_reading(false), m_sequence_id(0) {
+    // 读取配置，客户端有多少线程，后面会启动这么多的线程
     m_worker_thread_num =
       m_cct->_conf.get_val<uint64_t>(
         "immutable_object_cache_client_dedicated_thread_num");
 
+    // 建立asio网路模型
     if (m_worker_thread_num != 0) {
       m_worker = new boost::asio::io_service();
       m_worker_io_service_work = new boost::asio::io_service::work(*m_worker);
       for (uint64_t i = 0; i < m_worker_thread_num; i++) {
         std::thread* thd = new std::thread([this](){m_worker->run();});
-        m_worker_threads.push_back(thd);
+        m_worker_threads.push_back(thd);  //回调函数的线程，asio把任务分发给这个线程
       }
     }
+    // 创建缓存
     m_bp_header = buffer::create(get_header_size());
   }
 
@@ -37,6 +40,7 @@ namespace immutable_obj_cache {
     stop();
   }
 
+  // asio用的线程，处理读任务，会将任务具体分发给m_worker_threads.push_back(thd)
   void CacheClient::run() {
      m_io_thread.reset(new std::thread([this](){m_io_service.run(); }));
   }
@@ -91,10 +95,11 @@ namespace immutable_obj_cache {
   // async connect
   void CacheClient::connect(Context* on_finish) {
     m_dm_socket.async_connect(m_ep,
-      boost::bind(&CacheClient::handle_connect, this,
+      boost::bind(&CacheClient::handle_connect/*回调*/, this,
                   on_finish, boost::asio::placeholders::error));
   }
 
+  // 输出了连接信息，失败或者成功
   void CacheClient::handle_connect(Context* on_finish,
                                    const boost::system::error_code& err) {
     if (err) {
@@ -109,25 +114,27 @@ namespace immutable_obj_cache {
     on_finish->complete(0);
   }
 
+  // 查找对象
   void CacheClient::lookup_object(std::string pool_nspace, uint64_t pool_id,
                                   uint64_t snap_id, std::string oid,
                                   CacheGenContextURef&& on_finish) {
     ldout(m_cct, 20) << dendl;
+    // 创造请求
     ObjectCacheRequest* req = new ObjectCacheReadData(RBDSC_READ,
                                     ++m_sequence_id, 0, 0,
                                     pool_id, snap_id, oid, pool_nspace);
-    req->process_msg = std::move(on_finish);
-    req->encode();
+    req->process_msg = std::move(on_finish); //move 回调函数，避免拷贝
+    req->encode(); //编码压缩
 
     {
       std::lock_guard locker{m_lock};
-      m_outcoming_bl.append(req->get_payload_bufferlist());
+      m_outcoming_bl.append(req->get_payload_bufferlist()); //放到请求列表
       ceph_assert(m_seq_to_req.find(req->seq) == m_seq_to_req.end());
-      m_seq_to_req[req->seq] = req;
+      m_seq_to_req[req->seq] = req; //请i去的序列号
     }
 
     // try to send message to server.
-    try_send();
+    try_send(); //尝试发送，有线程正在发送就返回，没用就启动线程
 
     // try to receive ack from server.
     try_receive();
@@ -146,7 +153,7 @@ namespace immutable_obj_cache {
     bufferlist bl;
     {
       std::lock_guard locker{m_lock};
-      bl.swap(m_outcoming_bl);
+      bl.swap(m_outcoming_bl); //不拷贝，准备把队列的请求都发出去
       ceph_assert(m_outcoming_bl.length() == 0);
     }
 
@@ -154,9 +161,10 @@ namespace immutable_obj_cache {
     boost::asio::async_write(m_dm_socket,
         boost::asio::buffer(bl.c_str(), bl.length()),
         boost::asio::transfer_exactly(bl.length()),
+        //回调
         [this, bl](const boost::system::error_code& err, size_t cb) {
         if (err || cb != bl.length()) {
-           fault(ASIO_ERROR_WRITE, err);
+           fault(ASIO_ERROR_WRITE, err);  //具体处理错误
            return;
         }
 
@@ -168,7 +176,7 @@ namespace immutable_obj_cache {
              m_writing.store(false);
              return;
            }
-        }
+        } // 检查队列如果没有请求了，就结束退出
 
         // still have left bytes, continue to send.
         send_message();
@@ -187,7 +195,7 @@ namespace immutable_obj_cache {
   void CacheClient::receive_message() {
     ldout(m_cct, 20) << dendl;
     ceph_assert(m_reading.load());
-    read_reply_header();
+    read_reply_header(); //消息长度不一定一致，先读头部，告诉我消息多大
   }
 
   void CacheClient::read_reply_header() {
@@ -214,7 +222,7 @@ namespace immutable_obj_cache {
       return;
     }
 
-    ceph_assert(bytes_transferred == bp_head.length());
+    ceph_assert(bytes_transferred == bp_head.length()); // 读数据多长
 
     uint32_t data_len = get_data_len(bp_head.c_str());
 
@@ -264,6 +272,7 @@ namespace immutable_obj_cache {
         return;
       }
     }
+    // 如果还有数据继续读
     if (is_session_work()) {
       receive_message();
     }
@@ -290,15 +299,17 @@ namespace immutable_obj_cache {
        delete reply;
     });
 
+    //下面的complete会执行前面的process_reply，m_worker_thread_num配置的线程池数量
     if (m_worker_thread_num != 0) {
       m_worker->post([process_reply]() {
         process_reply->complete(true);
-      });
+      }); //丢给线程池
     } else {
-      process_reply->complete(false);
+      process_reply->complete(false); // 当前线程执行
     }
   }
 
+  //处理错误
   // if there is one request fails, just execute fault, then shutdown RO.
   void CacheClient::fault(const int err_type,
                           const boost::system::error_code& ec) {
@@ -363,7 +374,7 @@ namespace immutable_obj_cache {
       std::lock_guard locker{m_lock};
       for (auto it : m_seq_to_req) {
         it.second->type = RBDSC_READ_RADOS;
-        it.second->process_msg->complete(it.second);
+        it.second->process_msg->complete(it.second);  //读没成功，执行回调函数，请求会到librbd下一层
       }
       m_seq_to_req.clear();
     }
@@ -373,6 +384,7 @@ namespace immutable_obj_cache {
                        << ec.message() << dendl;
   }
 
+  //实现的不好， client的端的rbd与read only cache的object的注册
   // TODO : re-implement this method
   int CacheClient::register_client(Context* on_finish) {
     ObjectCacheRequest* reg_req = new ObjectCacheRegData(RBDSC_REGISTER,

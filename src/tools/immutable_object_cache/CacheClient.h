@@ -26,26 +26,27 @@ class CacheClient {
  public:
   CacheClient(const std::string& file, CephContext* ceph_ctx);
   ~CacheClient();
-  void run();
-  bool is_session_work();
+  void run(); //跑一个线程
+  bool is_session_work(); //判断session是否work，不正常就重连
   void close();
   int stop();
-  int connect();
-  void connect(Context* on_finish);
+  int connect(); //同步连接
+  void connect(Context* on_finish); //异步连接
   void lookup_object(std::string pool_nspace, uint64_t pool_id,
                      uint64_t snap_id, std::string oid,
                      CacheGenContextURef&& on_finish);
-  int register_client(Context* on_finish);
+  // client端跑再hook，通过这个函数查询object， 异步，on_finish 回调
+  int register_client(Context* on_finish);  
 
  private:
-  void send_message();
-  void try_send();
+  void send_message();  //发消息
+  void try_send();  //尝试发送 
   void fault(const int err_type, const boost::system::error_code& err);
-  void handle_connect(Context* on_finish, const boost::system::error_code& err);
+  void handle_connect(Context* on_finish, const boost::system::error_code& err); //异步连接的回调函数
   void try_receive();
   void receive_message();
-  void process(ObjectCacheRequest* reply, uint64_t seq_id);
-  void read_reply_header();
+  void process(ObjectCacheRequest* reply, uint64_t seq_id); //处理消息，处理ack
+  void read_reply_header();   //读消息的头，类似tcp的4k的头，显示后面具体消息有多少之类的
   void handle_reply_header(bufferptr bp_head,
                            const boost::system::error_code& ec,
                            size_t bytes_transferred);

@@ -25,6 +25,7 @@ void usage() {
   generic_server_usage();
 }
 
+// 处理命令行信号，比如ctrl+c
 static void handle_signal(int signum) {
   if (cachectl)
     cachectl->handle_signal(signum);
@@ -51,6 +52,7 @@ int main(int argc, const char **argv) {
   common_init_finish(g_ceph_context);
   global_init_chdir(g_ceph_context);
 
+  //处理命令行信号，例如ctrl+c ctrl+z
   init_async_signal_handler();
   register_async_signal_handler(SIGHUP, sighup_handler);
   register_async_signal_handler_oneshot(SIGINT, handle_signal);
@@ -59,8 +61,10 @@ int main(int argc, const char **argv) {
   std::vector<const char*> cmd_args;
   argv_to_vec(argc, argv, cmd_args);
 
+  // 创建cache control对象
   cachectl = new ceph::immutable_obj_cache::CacheController(g_ceph_context,
                                                             cmd_args);
+  // init过程会创建ObjectCacheStore对象
   int r = cachectl->init();
   if (r < 0) {
     std::cerr << "failed to initialize: " << cpp_strerror(r) << std::endl;

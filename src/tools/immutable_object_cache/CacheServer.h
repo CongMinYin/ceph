@@ -22,7 +22,7 @@ class CacheServer {
   CacheServer(CephContext* cct, const std::string& file, ProcessMsg processmsg);
   ~CacheServer();
 
-  int run();
+  int run();    //开始接收seesion请求
   int start_accept();
   int stop();
 
