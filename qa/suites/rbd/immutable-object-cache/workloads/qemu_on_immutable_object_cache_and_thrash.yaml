@@ -1,0 +1,12 @@
+tasks:
+- qemu:
+    client.0:
+      clone: true
+      test: qa/run_xfstests_qemu.sh
+      type: block
+      cpus: 4
+      memory: 4096
+      disks: 3
+- immutable_object_cache_thrash:
+    client.0:
+exclude_arch: armv7l
