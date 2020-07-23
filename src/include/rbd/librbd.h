@@ -118,11 +118,11 @@ typedef struct {
 #define RBD_MAX_IMAGE_NAME_SIZE 96
 #define RBD_MAX_BLOCK_NAME_SIZE 24
 
-#define RBD_SNAP_CREATE_SKIP_QUIESCE		1 << 0
-#define RBD_SNAP_CREATE_IGNORE_QUIESCE_ERROR	1 << 1
+#define RBD_SNAP_CREATE_SKIP_QUIESCE		(1 << 0)
+#define RBD_SNAP_CREATE_IGNORE_QUIESCE_ERROR	(1 << 1)
 
-#define RBD_SNAP_REMOVE_UNPROTECT	1 << 0
-#define RBD_SNAP_REMOVE_FLATTEN		1 << 1
+#define RBD_SNAP_REMOVE_UNPROTECT	(1 << 0)
+#define RBD_SNAP_REMOVE_FLATTEN		(1 << 1)
 #define RBD_SNAP_REMOVE_FORCE		(RBD_SNAP_REMOVE_UNPROTECT | RBD_SNAP_REMOVE_FLATTEN)
 
 /**
@@ -365,6 +365,11 @@ typedef enum {
   RBD_POOL_STAT_OPTION_TRASH_MAX_PROVISIONED_BYTES,
   RBD_POOL_STAT_OPTION_TRASH_SNAPSHOTS
 } rbd_pool_stat_option_t;
+
+/* rbd_write_zeroes / rbd_aio_write_zeroes flags */
+enum {
+  RBD_WRITE_ZEROES_FLAG_THICK_PROVISION = (1U<<0), /* fully allocated zeroed extent */
+};
 
 CEPH_RBD_API void rbd_image_options_create(rbd_image_options_t* opts);
 CEPH_RBD_API void rbd_image_options_destroy(rbd_image_options_t opts);

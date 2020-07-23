@@ -98,6 +98,18 @@ class VolumeClient(CephfsClient):
                 "that is what you want, re-issue the command followed by " \
                 "--yes-i-really-mean-it.".format(volname)
 
+        ret, out, err = self.mgr.check_mon_command({
+            'prefix': 'config get',
+            'key': 'mon_allow_pool_delete',
+            'who': 'mon',
+            'format': 'json',
+        })
+        mon_allow_pool_delete = json.loads(out)
+        if not mon_allow_pool_delete:
+            return -errno.EPERM, "", "pool deletion is disabled; you must first " \
+                "set the mon_allow_pool_delete config option to true before volumes " \
+                "can be deleted"
+
         metadata_pool, data_pools = get_pool_names(self.mgr, volname)
         if not metadata_pool:
             return -errno.ENOENT, "", "volume {0} doesn't exist".format(volname)
@@ -347,33 +359,31 @@ class VolumeClient(CephfsClient):
         return ret
 
     def protect_subvolume_snapshot(self, **kwargs):
-        ret        = 0, "", ""
+        ret        = 0, "", "Deprecation warning: 'snapshot protect' call is deprecated and will be removed in a future release"
         volname    = kwargs['vol_name']
         subvolname = kwargs['sub_name']
-        snapname   = kwargs['snap_name']
         groupname  = kwargs['group_name']
 
         try:
             with open_volume(self, volname) as fs_handle:
                 with open_group(fs_handle, self.volspec, groupname) as group:
                     with open_subvol(fs_handle, self.volspec, group, subvolname) as subvolume:
-                        subvolume.protect_snapshot(snapname)
+                        log.warning("snapshot protect call is deprecated and will be removed in a future release")
         except VolumeException as ve:
             ret = self.volume_exception_to_retval(ve)
         return ret
 
     def unprotect_subvolume_snapshot(self, **kwargs):
-        ret        = 0, "", ""
+        ret        = 0, "", "Deprecation warning: 'snapshot unprotect' call is deprecated and will be removed in a future release"
         volname    = kwargs['vol_name']
         subvolname = kwargs['sub_name']
-        snapname   = kwargs['snap_name']
         groupname  = kwargs['group_name']
 
         try:
             with open_volume(self, volname) as fs_handle:
                 with open_group(fs_handle, self.volspec, groupname) as group:
                     with open_subvol(fs_handle, self.volspec, group, subvolname) as subvolume:
-                        subvolume.unprotect_snapshot(snapname)
+                        log.warning("snapshot unprotect call is deprecated and will be removed in a future release")
         except VolumeException as ve:
             ret = self.volume_exception_to_retval(ve)
         return ret
@@ -400,8 +410,6 @@ class VolumeClient(CephfsClient):
 
         if not snapname.encode('utf-8') in subvolume.list_snapshots():
             raise VolumeException(-errno.ENOENT, "snapshot '{0}' does not exist".format(snapname))
-        if not subvolume.is_snapshot_protected(snapname):
-            raise VolumeException(-errno.EINVAL, "snapshot '{0}' is not protected".format(snapname))
 
         # TODO: when the target group is same as source, reuse group object.
         with open_group(fs_handle, self.volspec, target_groupname) as target_group:
