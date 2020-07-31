@@ -32,6 +32,7 @@ class CacheController {
   std::vector<const char*> m_args;
   CephContext *m_cct;
   ObjectCacheStore *m_object_cache_store = nullptr;
+  std::thread* m_promote_thread = nullptr;
 };
 
 }  // namespace immutable_obj_cache

@@ -19,6 +19,8 @@ CacheController::CacheController(CephContext *cct,
 }
 
 CacheController::~CacheController() {
+  m_promote_thread->join();
+  delete m_promote_thread;
   delete m_cache_server;
   delete m_object_cache_store;
 }
@@ -82,6 +84,9 @@ int CacheController::run() {
       std::bind(&CacheController::handle_request, this,
                 std::placeholders::_1, std::placeholders::_2));
 
+    m_promote_thread = new std::thread([this](){
+      m_object_cache_store->promote_from_queue();});
+
     int ret = m_cache_server->run();
     if (ret != 0) {
       return ret;
@@ -118,8 +123,8 @@ void CacheController::handle_request(CacheSession* session,
       bool return_dne_path = session->client_version().empty();
       int ret = m_object_cache_store->lookup_object(
         req_read_data->pool_namespace, req_read_data->pool_id,
-        req_read_data->snap_id, req_read_data->oid, return_dne_path,
-        cache_path);
+        req_read_data->snap_id, req_read_data->object_size,
+        req_read_data->oid, return_dne_path, cache_path);
       ObjectCacheRequest* reply = nullptr;
       if (ret != OBJ_CACHE_PROMOTED && ret != OBJ_CACHE_DNE) {
         reply = new ObjectCacheReadRadosData(RBDSC_READ_RADOS, req->seq);
