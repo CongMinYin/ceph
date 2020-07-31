@@ -934,6 +934,12 @@ descriptions, and submitting the command to the appropriate daemon.
 
 %package -n python%{python3_pkgversion}-ceph-common
 Summary:	Python 3 utility libraries for Ceph
+%if 0%{?fedora} || 0%{?rhel} >= 8
+Requires:       python%{python3_pkgversion}-pyyaml
+%endif
+%if 0%{?suse_version}
+Requires:       python%{python3_pkgversion}-PyYAML
+%endif
 %if 0%{?suse_version}
 Group:		Development/Libraries/Python
 %endif
@@ -1085,6 +1091,11 @@ export CPPFLAGS="$java_inc"
 export CFLAGS="$RPM_OPT_FLAGS"
 export CXXFLAGS="$RPM_OPT_FLAGS"
 export LDFLAGS="$RPM_LD_FLAGS"
+
+%if 0%{with seastar}
+# seastar uses longjmp() to implement coroutine. and this annoys longjmp_chk()
+export CXXFLAGS=$(echo $RPM_OPT_FLAGS | sed -e 's/-Wp,-D_FORTIFY_SOURCE=2//g')
+%endif
 
 # Parallel build settings ...
 CEPH_MFLAGS_JOBS="%{?_smp_mflags}"
