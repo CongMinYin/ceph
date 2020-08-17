@@ -591,7 +591,7 @@ seastar::future<Ref<MOSDOpReply>> PG::do_osd_ops(
   const auto oid = m->get_snapid() == CEPH_SNAPDIR ? m->get_hobj().get_head()
                                                    : m->get_hobj();
   auto ox =
-    std::make_unique<OpsExecuter>(obc, &op_info, *this/* as const& */, m);
+    std::make_unique<OpsExecuter>(obc, op_info, *this/* as const& */, m);
 
   return crimson::do_for_each(
     m->ops, [obc, m, ox = ox.get()](OSDOp& osd_op) {
@@ -600,32 +600,29 @@ seastar::future<Ref<MOSDOpReply>> PG::do_osd_ops(
       *m,
       obc->obs.oi.soid,
       ceph_osd_op_name(osd_op.op.op));
-    return ox->execute_osd_op(osd_op);
+    return ox->execute_op(osd_op);
   }).safe_then([this, obc, m, ox = ox.get(), &op_info] {
     logger().debug(
       "do_osd_ops: {} - object {} all operations successful",
       *m,
       obc->obs.oi.soid);
-    return std::move(*ox).submit_changes([this, m, &op_info]
-      (auto&& txn, auto&& obc, auto&& osd_op_p) -> osd_op_errorator::future<> {
-	// XXX: the entire lambda could be scheduled conditionally. ::if_then()?
-	if (txn.empty()) {
-	  logger().debug(
-	    "do_osd_ops: {} - object {} txn is empty, bypassing mutate",
-	    *m,
-	    obc->obs.oi.soid);
-          return osd_op_errorator::now();
-        } else {
-	  logger().debug(
-	    "do_osd_ops: {} - object {} submitting txn",
-	    *m,
-	    obc->obs.oi.soid);
-	   return submit_transaction(op_info,
-                                     m->ops,
-                                     std::move(obc),
-                                     std::move(txn),
-                                     std::move(osd_op_p));
-	 }
+    return std::move(*ox).flush_changes(
+      [this, m] (auto&& obc) -> osd_op_errorator::future<> {
+	logger().debug(
+	  "do_osd_ops: {} - object {} txn is empty, bypassing mutate",
+	  *m,
+	  obc->obs.oi.soid);
+        return osd_op_errorator::now();
+      },
+      [this, m, &op_info] (auto&& txn,
+			   auto&& obc,
+			   auto&& osd_op_p) -> osd_op_errorator::future<> {
+	logger().debug(
+	  "do_osd_ops: {} - object {} submitting txn",
+	  *m,
+	  obc->obs.oi.soid);
+	return submit_transaction(
+          op_info, m->ops, std::move(obc), std::move(txn), std::move(osd_op_p));
       });
   }).safe_then([this,
                 m,
@@ -679,10 +676,11 @@ seastar::future<Ref<MOSDOpReply>> PG::do_pg_ops(Ref<MOSDOp> m)
     throw crimson::common::system_shutdown_exception();
   }
 
-  auto ox = std::make_unique<OpsExecuter>(*this/* as const& */, m);
+  auto ox = std::make_unique<PgOpsExecuter>(std::as_const(*this),
+                                            std::as_const(*m));
   return seastar::do_for_each(m->ops, [ox = ox.get()](OSDOp& osd_op) {
     logger().debug("will be handling pg op {}", ceph_osd_op_name(osd_op.op.op));
-    return ox->execute_pg_op(osd_op);
+    return ox->execute_op(osd_op);
   }).then([m, this, ox = std::move(ox)] {
     auto reply = make_message<MOSDOpReply>(m.get(), 0, get_osdmap_epoch(),
                                            CEPH_OSD_FLAG_ACK | CEPH_OSD_FLAG_ONDISK,
@@ -817,23 +815,16 @@ PG::get_or_load_head_obc(hobject_t oid)
           std::pair<crimson::osd::ObjectContextRef, bool>>
       {
 	logger().debug(
-	  "{}: loaded obs {} for {}",
-	  __func__,
-	  md->os.oi,
-	  oid);
+	  "get_or_load_head_obc: loaded obs {} for {}", md->os.oi, oid);
 	if (!md->ss) {
 	  logger().error(
-	    "{}: oid {} missing snapset",
-	    __func__,
-	    oid);
+	    "get_or_load_head_obc: oid {} missing snapset", oid);
 	  return crimson::ct_error::object_corrupted::make();
 	}
 	obc->set_head_state(std::move(md->os), std::move(*(md->ss)));
 	  logger().debug(
-	    "{}: returning obc {} for {}",
-	    __func__,
-	    obc->obs.oi,
-	    obc->obs.oi.soid);
+	    "get_or_load_head_obc: returning obc {} for {}",
+	    obc->obs.oi, obc->obs.oi.soid);
 	  return load_obc_ertr::make_ready_future<
 	    std::pair<crimson::osd::ObjectContextRef, bool>>(
 	      std::make_pair(obc, false)

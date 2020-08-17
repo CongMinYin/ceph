@@ -18,9 +18,7 @@ import { CdFormGroup } from '../../../shared/forms/cd-form-group';
 import { CdValidators } from '../../../shared/forms/cd-validators';
 import { FinishedTask } from '../../../shared/models/finished-task';
 import { Permission } from '../../../shared/models/permissions';
-import { CephReleaseNamePipe } from '../../../shared/pipes/ceph-release-name.pipe';
 import { AuthStorageService } from '../../../shared/services/auth-storage.service';
-import { SummaryService } from '../../../shared/services/summary.service';
 import { TaskWrapperService } from '../../../shared/services/task-wrapper.service';
 import { NfsFormClientComponent } from '../nfs-form-client/nfs-form-client.component';
 
@@ -61,7 +59,6 @@ export class NfsFormComponent extends CdForm implements OnInit {
 
   action: string;
   resource: string;
-  docsUrl: string;
 
   daemonsSelections: SelectOption[] = [];
   daemonsMessages = new SelectMessages({ noOptions: $localize`There are no daemons available.` });
@@ -90,8 +87,6 @@ export class NfsFormComponent extends CdForm implements OnInit {
     private router: Router,
     private rgwUserService: RgwUserService,
     private formBuilder: CdFormBuilder,
-    private summaryservice: SummaryService,
-    private cephReleaseNamePipe: CephReleaseNamePipe,
     private taskWrapper: TaskWrapperService,
     private cdRef: ChangeDetectorRef,
     public actionLabels: ActionLabelsI18n
@@ -127,17 +122,12 @@ export class NfsFormComponent extends CdForm implements OnInit {
       this.action = this.actionLabels.CREATE;
       this.getData(promises);
     }
-
-    this.summaryservice.subscribeOnce((summary) => {
-      const releaseName = this.cephReleaseNamePipe.transform(summary.version);
-      this.docsUrl = `http://docs.ceph.com/docs/${releaseName}/radosgw/nfs/`;
-    });
   }
 
   getData(promises: Observable<any>[]) {
     forkJoin(promises).subscribe((data: any[]) => {
       this.resolveDaemons(data[0]);
-      this.resolvefsals(data[1]);
+      this.resolveFsals(data[1]);
       this.resolveClients(data[2]);
       this.resolveFilesystems(data[3]);
       if (data[4]) {
@@ -292,7 +282,7 @@ export class NfsFormComponent extends CdForm implements OnInit {
     }
   }
 
-  resolvefsals(res: string[]) {
+  resolveFsals(res: string[]) {
     res.forEach((fsal) => {
       const fsalItem = this.nfsService.nfsFsal.find((currentFsalItem) => {
         return fsal === currentFsalItem.value;

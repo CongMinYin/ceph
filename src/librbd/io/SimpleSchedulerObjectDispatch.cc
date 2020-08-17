@@ -162,7 +162,7 @@ void SimpleSchedulerObjectDispatch<I>::ObjectRequests::dispatch_delayed_requests
     auto req = ObjectDispatchSpec::create_write(
         image_ctx, OBJECT_DISPATCH_LAYER_SCHEDULER,
         m_object_no, offset, std::move(merged_requests.data), m_snapc,
-        m_op_flags, 0, {}, ctx);
+        m_op_flags, 0, std::nullopt, 0, {}, ctx);
 
     req->object_dispatch_flags = m_object_dispatch_flags;
     req->send();
@@ -215,18 +215,21 @@ void SimpleSchedulerObjectDispatch<I>::shut_down(Context* on_finish) {
 
 template <typename I>
 bool SimpleSchedulerObjectDispatch<I>::read(
-    uint64_t object_no, uint64_t object_off, uint64_t object_len,
-    librados::snap_t snap_id, int op_flags, const ZTracer::Trace &parent_trace,
-    ceph::bufferlist* read_data, Extents* extent_map,
+    uint64_t object_no, const Extents &extents, librados::snap_t snap_id,
+    int op_flags, const ZTracer::Trace &parent_trace,
+    ceph::bufferlist* read_data, Extents* extent_map, uint64_t* version,
     int* object_dispatch_flags, DispatchResult* dispatch_result,
     Context** on_finish, Context* on_dispatched) {
   auto cct = m_image_ctx->cct;
-  ldout(cct, 20) << data_object_name(m_image_ctx, object_no) << " "
-                 << object_off << "~" << object_len << dendl;
+  ldout(cct, 20) << data_object_name(m_image_ctx, object_no) << " " << extents
+                 << dendl;
 
   std::lock_guard locker{m_lock};
-  if (intersects(object_no, object_off, object_len)) {
-    dispatch_delayed_requests(object_no);
+  for (auto [object_off, object_len] : extents) {
+    if (intersects(object_no, object_off, object_len)) {
+      dispatch_delayed_requests(object_no);
+      break;
+    }
   }
 
   return false;
@@ -253,13 +256,21 @@ bool SimpleSchedulerObjectDispatch<I>::discard(
 template <typename I>
 bool SimpleSchedulerObjectDispatch<I>::write(
     uint64_t object_no, uint64_t object_off, ceph::bufferlist&& data,
-    const ::SnapContext &snapc, int op_flags,
+    const ::SnapContext &snapc, int op_flags, int write_flags,
+    std::optional<uint64_t> assert_version,
     const ZTracer::Trace &parent_trace, int* object_dispatch_flags,
     uint64_t* journal_tid, DispatchResult* dispatch_result,
     Context** on_finish, Context* on_dispatched) {
   auto cct = m_image_ctx->cct;
   ldout(cct, 20) << data_object_name(m_image_ctx, object_no) << " "
                  << object_off << "~" << data.length() << dendl;
+
+  // don't try to batch assert version writes
+  if (assert_version.has_value() ||
+      (write_flags & OBJECT_WRITE_FLAG_CREATE_EXCLUSIVE) != 0) {
+    dispatch_delayed_requests(object_no);
+    return false;
+  }
 
   std::lock_guard locker{m_lock};
   if (try_delay_write(object_no, object_off, std::move(data), snapc, op_flags,

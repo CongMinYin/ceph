@@ -134,7 +134,11 @@ BuildRequires:	gperf
 BuildRequires:  cmake > 3.5
 BuildRequires:	cryptsetup
 BuildRequires:	fuse-devel
+%if 0%{with seastar}
+BuildRequires:	gcc-toolset-9-gcc-c++ >= 9.2.1-2.3
+%else
 BuildRequires:	gcc-c++
+%endif
 BuildRequires:	gdbm
 %if 0%{with tcmalloc}
 %if 0%{?fedora} || 0%{?rhel}
@@ -207,6 +211,12 @@ BuildRequires:  fmt-devel
 BuildRequires:  libubsan
 BuildRequires:  libasan
 BuildRequires:  libatomic
+%if 0%{with seastar}
+BuildRequires:  gcc-toolset-9-annobin
+BuildRequires:  gcc-toolset-9-libubsan-devel
+BuildRequires:  gcc-toolset-9-libasan-devel
+BuildRequires:  gcc-toolset-9-libatomic-devel
+%endif
 %endif
 %endif
 #################################################################################
@@ -693,6 +703,7 @@ Requires:	ceph-base = %{_epoch_prefix}%{version}-%{release}
 Requires:	lvm2
 Requires:	sudo
 Requires:	libstoragemgmt
+Requires:	python%{python3_pkgversion}-ceph-common = %{_epoch_prefix}%{version}-%{release}
 %description osd
 ceph-osd is the object storage daemon for the Ceph distributed file
 system.  It is responsible for storing objects on a local file system
@@ -1074,6 +1085,10 @@ This package provides Ceph’s default alerts for Prometheus.
 # LTO can be enabled as soon as the following GCC bug is fixed:
 # https://gcc.gnu.org/bugzilla/show_bug.cgi?id=48200
 %define _lto_cflags %{nil}
+
+%if 0%{with seastar}
+. /opt/rh/gcc-toolset-9/enable
+%endif
 
 %if 0%{with cephfs_java}
 # Find jni.h
@@ -1655,6 +1670,7 @@ fi
 %{_datadir}/ceph/mgr/insights
 %{_datadir}/ceph/mgr/iostat
 %{_datadir}/ceph/mgr/localpool
+%{_datadir}/ceph/mgr/mds_autoscaler
 %{_datadir}/ceph/mgr/orchestrator
 %{_datadir}/ceph/mgr/osd_perf_query
 %{_datadir}/ceph/mgr/pg_autoscaler

@@ -62,8 +62,9 @@ struct btree_lba_manager_test :
     }
 
     return journal.submit_record(std::move(*record)).safe_then(
-      [this, t=std::move(t)](paddr_t addr) {
+      [this, t=std::move(t)](paddr_t addr) mutable {
 	cache.complete_commit(*t, addr);
+	lba_manager->complete_transaction(*t);
       },
       crimson::ct_error::all_same_way([](auto e) {
 	ceph_assert(0 == "Hit error submitting to journal");
@@ -76,7 +77,7 @@ struct btree_lba_manager_test :
       return journal.open_for_write();
     }).safe_then([this] {
       return seastar::do_with(
-	lba_manager->create_transaction(),
+	make_transaction(),
 	[this](auto &transaction) {
 	  cache.init();
 	  return cache.mkfs(*transaction
@@ -119,10 +120,10 @@ struct btree_lba_manager_test :
 
   auto create_transaction() {
     auto t = test_transaction_t{
-      lba_manager->create_transaction(),
+      make_transaction(),
       test_lba_mappings
     };
-    cache.alloc_new_extent<TestBlock>(*t.t, TestBlock::SIZE);
+    cache.alloc_new_extent<TestBlockPhysical>(*t.t, TestBlockPhysical::SIZE);
     return t;
   }
 
@@ -144,6 +145,12 @@ struct btree_lba_manager_test :
       bottom,
       top
     );
+  }
+
+  segment_off_t next_off = 0;
+  paddr_t get_paddr() {
+    next_off += block_size;
+    return make_fake_paddr(next_off);
   }
 
   auto alloc_mapping(
@@ -207,7 +214,7 @@ struct btree_lba_manager_test :
 
     auto refcnt = lba_manager->decref_extent(
       *t.t,
-      target->first).unsafe_get0();
+      target->first).unsafe_get0().refcount;
     EXPECT_EQ(refcnt, target->second.refcount);
     if (target->second.refcount == 0) {
       t.mappings.erase(target);
@@ -221,7 +228,7 @@ struct btree_lba_manager_test :
     target->second.refcount++;
     auto refcnt = lba_manager->incref_extent(
       *t.t,
-      target->first).unsafe_get0();
+      target->first).unsafe_get0().refcount;
     EXPECT_EQ(refcnt, target->second.refcount);
   }
 
@@ -257,13 +264,12 @@ TEST_F(btree_lba_manager_test, basic)
 {
   run_async([this] {
     laddr_t laddr = 0x12345678 * block_size;
-    paddr_t paddr = { 1, static_cast<segment_off_t>(block_size * 10) };
     {
       // write initial mapping
       auto t = create_transaction();
       check_mappings(t);  // check in progress transaction sees mapping
       check_mappings();   // check concurrent does not
-      auto ret = alloc_mapping(t, laddr, block_size, paddr);
+      auto ret = alloc_mapping(t, laddr, block_size, get_paddr());
       submit_test_transaction(std::move(t));
     }
     check_mappings();     // check new transaction post commit sees it
@@ -277,7 +283,7 @@ TEST_F(btree_lba_manager_test, force_split)
       auto t = create_transaction();
       logger().debug("opened transaction");
       for (unsigned j = 0; j < 5; ++j) {
-	auto ret = alloc_mapping(t, 0, block_size, P_ADDR_MIN);
+	auto ret = alloc_mapping(t, 0, block_size, get_paddr());
 	if ((i % 10 == 0) && (j == 3)) {
 	  check_mappings(t);
 	  check_mappings();
@@ -297,7 +303,7 @@ TEST_F(btree_lba_manager_test, force_split_merge)
       auto t = create_transaction();
       logger().debug("opened transaction");
       for (unsigned j = 0; j < 5; ++j) {
-	auto ret = alloc_mapping(t, 0, block_size, P_ADDR_MIN);
+	auto ret = alloc_mapping(t, 0, block_size, get_paddr());
 	// just to speed things up a bit
 	if ((i % 100 == 0) && (j == 3)) {
 	  check_mappings(t);

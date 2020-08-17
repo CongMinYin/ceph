@@ -25,7 +25,7 @@ static inline int execute_osd_op(cls_method_context_t hctx, OSDOp& op)
   // created for us by `seastar::async` in `::do_op_call()`.
   int ret = 0;
   using osd_op_errorator = crimson::osd::OpsExecuter::osd_op_errorator;
-  reinterpret_cast<crimson::osd::OpsExecuter*>(hctx)->execute_osd_op(op).handle_error(
+  reinterpret_cast<crimson::osd::OpsExecuter*>(hctx)->execute_op(op).handle_error(
     osd_op_errorator::all_same_way([&ret] (const std::error_code& err) {
       assert(err.value() > 0);
       ret = -err.value();
@@ -196,6 +196,14 @@ int cls_cxx_truncate(cls_method_context_t hctx, int ofs)
   OSDOp op{CEPH_OSD_OP_TRUNCATE};
   op.op.extent.offset = ofs;
   op.op.extent.length = 0;
+  return execute_osd_op(hctx, op);
+}
+
+int cls_cxx_write_zero(cls_method_context_t hctx, int offset, int len)
+{
+  OSDOp op{CEPH_OSD_OP_ZERO};
+  op.op.extent.offset = offset;
+  op.op.extent.length = len;
   return execute_osd_op(hctx, op);
 }
 
