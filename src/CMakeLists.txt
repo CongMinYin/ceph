@@ -386,6 +386,9 @@ set(libcommon_files
   osdc/error_code.cc
   librbd/Features.cc
   ${mds_files})
+if(WITH_CACHE_REPLICA)
+  list(APPEND libcommon_files mon/ReplicaDaemonMap.cc)
+endif()
 if(WITH_JAEGER)
   list(APPEND libcommon_files common/tracer.cc)
 endif()
