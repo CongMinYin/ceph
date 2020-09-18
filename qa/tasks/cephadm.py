@@ -10,6 +10,7 @@ import os
 import json
 import re
 import uuid
+import yaml
 
 from io import BytesIO, StringIO
 import toml
@@ -158,6 +159,16 @@ def ceph_log(ctx, config):
     cluster_name = config['cluster']
     fsid = ctx.ceph[cluster_name].fsid
 
+    # Add logs directory to job's info log file
+    with open(os.path.join(ctx.archive, 'info.yaml'), 'r+') as info_file:
+        info_yaml = yaml.safe_load(info_file)
+        info_file.seek(0)
+        if 'archive' not in info_yaml:
+            info_yaml['archive'] = {'log': '/var/log/ceph'}
+        else:
+            info_yaml['archive']['log'] = '/var/log/ceph'
+        yaml.safe_dump(info_yaml, info_file, default_flow_style=False)
+
     try:
         yield
 
@@ -199,13 +210,13 @@ def ceph_log(ctx, config):
             return None
 
         if first_in_ceph_log('\[ERR\]|\[WRN\]|\[SEC\]',
-                             config.get('log-whitelist')) is not None:
+                             config.get('log-ignorelist')) is not None:
             log.warning('Found errors (ERR|WRN|SEC) in cluster log')
             ctx.summary['success'] = False
             # use the most severe problem as the failure reason
             if 'failure_reason' not in ctx.summary:
                 for pattern in ['\[SEC\]', '\[ERR\]', '\[WRN\]']:
-                    match = first_in_ceph_log(pattern, config['log-whitelist'])
+                    match = first_in_ceph_log(pattern, config['log-ignorelist'])
                     if match is not None:
                         ctx.summary['failure_reason'] = \
                             '"{match}" in cluster log'.format(
@@ -223,6 +234,7 @@ def ceph_log(ctx, config):
                         'sudo',
                         'find',
                         '/var/log/ceph',   # all logs, not just for the cluster
+                        '/var/log/rbd-target-api', # ceph-iscsi
                         '-name',
                         '*.log',
                         '-print0',
@@ -264,6 +276,16 @@ def ceph_crash(ctx, config):
     """
     cluster_name = config['cluster']
     fsid = ctx.ceph[cluster_name].fsid
+
+    # Add logs directory to job's info log file
+    with open(os.path.join(ctx.archive, 'info.yaml'), 'r+') as info_file:
+        info_yaml = yaml.safe_load(info_file)
+        info_file.seek(0)
+        if 'archive' not in info_yaml:
+            info_yaml['archive'] = {'crash': '/var/lib/ceph/%s/crash' % fsid}
+        else:
+            info_yaml['archive']['crash'] = '/var/lib/ceph/%s/crash' % fsid
+        yaml.safe_dump(info_yaml, info_file, default_flow_style=False)
 
     try:
         yield
@@ -307,7 +329,7 @@ def ceph_bootstrap(ctx, config, registry):
     first_mon = ctx.ceph[cluster_name].first_mon
     first_mon_role = ctx.ceph[cluster_name].first_mon_role
     mons = ctx.ceph[cluster_name].mons
-    
+
     ctx.cluster.run(args=[
         'sudo', 'mkdir', '-p', '/etc/ceph',
         ]);
@@ -322,8 +344,7 @@ def ceph_bootstrap(ctx, config, registry):
         conf_fp = BytesIO()
         seed_config = build_initial_config(ctx, config)
         seed_config.write(conf_fp)
-        teuthology.write_file(
-            remote=bootstrap_remote,
+        bootstrap_remote.write_file(
             path='{}/seed.{}.conf'.format(testdir, cluster_name),
             data=conf_fp.getvalue())
         log.debug('Final config:\n' + conf_fp.getvalue().decode())
@@ -387,25 +408,19 @@ def ceph_bootstrap(ctx, config, registry):
 
         # fetch keys and configs
         log.info('Fetching config...')
-        ctx.ceph[cluster_name].config_file = teuthology.get_file(
-            remote=bootstrap_remote,
-            path='/etc/ceph/{}.conf'.format(cluster_name))
+        ctx.ceph[cluster_name].config_file = \
+            bootstrap_remote.read_file(f'/etc/ceph/{cluster_name}.conf')
         log.info('Fetching client.admin keyring...')
-        ctx.ceph[cluster_name].admin_keyring = teuthology.get_file(
-            remote=bootstrap_remote,
-            path='/etc/ceph/{}.client.admin.keyring'.format(cluster_name))
+        ctx.ceph[cluster_name].admin_keyring = \
+            bootstrap_remote.read_file(f'/etc/ceph/{cluster_name}.client.admin.keyring')
         log.info('Fetching mon keyring...')
-        ctx.ceph[cluster_name].mon_keyring = teuthology.get_file(
-            remote=bootstrap_remote,
-            path='/var/lib/ceph/%s/mon.%s/keyring' % (fsid, first_mon),
-            sudo=True)
+        ctx.ceph[cluster_name].mon_keyring = \
+            bootstrap_remote.read_file(f'/var/lib/ceph/{fsid}/mon.{first_mon}/keyring', sudo=True)
 
         # fetch ssh key, distribute to additional nodes
         log.info('Fetching pub ssh key...')
-        ssh_pub_key = teuthology.get_file(
-            remote=bootstrap_remote,
-            path='{}/{}.pub'.format(testdir, cluster_name)
-        ).decode('ascii').strip()
+        ssh_pub_key = bootstrap_remote.read_file(
+            f'{testdir}/{cluster_name}.pub').decode('ascii').strip()
 
         log.info('Installing pub ssh key for root users...')
         ctx.cluster.run(args=[
@@ -427,12 +442,10 @@ def ceph_bootstrap(ctx, config, registry):
             if remote == bootstrap_remote:
                 continue
             log.info('Writing (initial) conf and keyring to %s' % remote.shortname)
-            teuthology.write_file(
-                remote=remote,
+            remote.write_file(
                 path='/etc/ceph/{}.conf'.format(cluster_name),
                 data=ctx.ceph[cluster_name].config_file)
-            teuthology.write_file(
-                remote=remote,
+            remote.write_file(
                 path='/etc/ceph/{}.client.admin.keyring'.format(cluster_name),
                 data=ctx.ceph[cluster_name].admin_keyring)
 
@@ -469,7 +482,7 @@ def ceph_bootstrap(ctx, config, registry):
                 ctx.daemons.get_daemon(type_, id_, cluster).stop()
             except Exception:
                 log.exception(f'Failed to stop "{role}"')
-                raise 
+                raise
 
         # clean up /etc/ceph
         ctx.cluster.run(args=[
@@ -765,6 +778,56 @@ def ceph_rgw(ctx, config):
 
     yield
 
+
+@contextlib.contextmanager
+def ceph_iscsi(ctx, config):
+    """
+    Deploy iSCSIs
+    """
+    cluster_name = config['cluster']
+    fsid = ctx.ceph[cluster_name].fsid
+
+    nodes = []
+    daemons = {}
+    for remote, roles in ctx.cluster.remotes.items():
+        for role in [r for r in roles
+                    if teuthology.is_type('iscsi', cluster_name)(r)]:
+            c_, _, id_ = teuthology.split_role(role)
+            log.info('Adding %s on %s' % (role, remote.shortname))
+            nodes.append(remote.shortname + '=' + id_)
+            daemons[role] = (remote, id_)
+    if nodes:
+        poolname = 'iscsi'
+        # ceph osd pool create iscsi 3 3 replicated
+        _shell(ctx, cluster_name, remote, [
+            'ceph', 'osd', 'pool', 'create',
+            poolname, '3', '3', 'replicated']
+        )
+
+        _shell(ctx, cluster_name, remote, [
+            'ceph', 'osd', 'pool', 'application', 'enable',
+            poolname, 'rbd']
+        )
+
+        # ceph orch apply iscsi iscsi user password
+        _shell(ctx, cluster_name, remote, [
+            'ceph', 'orch', 'apply', 'iscsi',
+            poolname, 'user', 'password',
+            '--placement', str(len(nodes)) + ';' + ';'.join(nodes)]
+        )
+    for role, i in daemons.items():
+        remote, id_ = i
+        ctx.daemons.register_daemon(
+            remote, 'iscsi', id_,
+            cluster=cluster_name,
+            fsid=fsid,
+            logger=log.getChild(role),
+            wait=False,
+            started=True,
+        )
+
+    yield
+
 @contextlib.contextmanager
 def ceph_clients(ctx, config):
     cluster_name = config['cluster']
@@ -792,12 +855,7 @@ def ceph_clients(ctx, config):
                 stdout=StringIO(),
             )
             keyring = r.stdout.getvalue()
-            teuthology.sudo_write_file(
-                remote=remote,
-                path=client_keyring,
-                data=keyring,
-                perms='0644'
-            )
+            remote.sudo_write_file(client_keyring, keyring, mode='0644')
     yield
 
 @contextlib.contextmanager
@@ -963,14 +1021,14 @@ def distribute_config_and_admin_keyring(ctx, config):
     cluster_name = config['cluster']
     log.info('Distributing (final) config and client.admin keyring...')
     for remote, roles in ctx.cluster.remotes.items():
-        teuthology.sudo_write_file(
-            remote=remote,
-            path='/etc/ceph/{}.conf'.format(cluster_name),
-            data=ctx.ceph[cluster_name].config_file)
-        teuthology.sudo_write_file(
-            remote=remote,
+        remote.write_file(
+            '/etc/ceph/{}.conf'.format(cluster_name),
+            ctx.ceph[cluster_name].config_file,
+            sudo=True)
+        remote.write_file(
             path='/etc/ceph/{}.client.admin.keyring'.format(cluster_name),
-            data=ctx.ceph[cluster_name].admin_keyring)
+            data=ctx.ceph[cluster_name].admin_keyring,
+            sudo=True)
     try:
         yield
     finally:
@@ -1128,7 +1186,7 @@ def task(ctx, config):
     if cluster_name not in ctx.ceph:
         ctx.ceph[cluster_name] = argparse.Namespace()
         ctx.ceph[cluster_name].bootstrapped = False
- 
+
     # image
     teuth_defaults = teuth_config.get('defaults', {})
     cephadm_defaults = teuth_defaults.get('cephadm', {})
@@ -1191,6 +1249,7 @@ def task(ctx, config):
             lambda: ceph_osds(ctx=ctx, config=config),
             lambda: ceph_mdss(ctx=ctx, config=config),
             lambda: ceph_rgw(ctx=ctx, config=config),
+            lambda: ceph_iscsi(ctx=ctx, config=config),
             lambda: ceph_monitoring('prometheus', ctx=ctx, config=config),
             lambda: ceph_monitoring('node-exporter', ctx=ctx, config=config),
             lambda: ceph_monitoring('alertmanager', ctx=ctx, config=config),
@@ -1248,22 +1307,15 @@ def registries_add_mirror_to_docker_io(conf, mirror):
 
 def add_mirror_to_cluster(ctx, mirror):
     log.info('Adding local image mirror %s' % mirror)
-    
+
     registries_conf = '/etc/containers/registries.conf'
-    
+
     for remote in ctx.cluster.remotes.keys():
         try:
-            config = teuthology.get_file(
-                remote=remote,
-                path=registries_conf
-            )
+            config = remote.read_file(registries_conf)
             new_config = toml.dumps(registries_add_mirror_to_docker_io(config.decode('utf-8'), mirror))
 
-            teuthology.sudo_write_file(
-                remote=remote,
-                path=registries_conf,
-                data=new_config,
-            )
+            remote.sudo_write_file(registries_conf, new_config)
         except IOError as e:  # py3: use FileNotFoundError instead.
             if e.errno != errno.ENOENT:
                 raise

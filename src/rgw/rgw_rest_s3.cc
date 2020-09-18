@@ -62,6 +62,7 @@
 #include "rgw_rest_sts.h"
 #include "rgw_rest_iam.h"
 #include "rgw_sts.h"
+#include "rgw_sal_rados.h"
 
 #define dout_context g_ceph_context
 #define dout_subsys ceph_subsys_rgw
@@ -2344,8 +2345,6 @@ int RGWPutObj_ObjStore_S3::get_params()
   if (!s->length)
     return -ERR_LENGTH_REQUIRED;
 
-  map<string, bufferlist> src_attrs;
-  size_t pos;
   int ret;
 
   map_qs_metadata(s);
@@ -2359,93 +2358,6 @@ int RGWPutObj_ObjStore_S3::get_params()
 
   if_match = s->info.env->get("HTTP_IF_MATCH");
   if_nomatch = s->info.env->get("HTTP_IF_NONE_MATCH");
-  copy_source = url_decode(s->info.env->get("HTTP_X_AMZ_COPY_SOURCE", ""));
-  copy_source_range = s->info.env->get("HTTP_X_AMZ_COPY_SOURCE_RANGE");
-
-  /* handle x-amz-copy-source */
-  std::string_view cs_view(copy_source);
-  if (! cs_view.empty()) {
-    if (cs_view[0] == '/')
-      cs_view.remove_prefix(1);
-    copy_source_bucket_name = std::string(cs_view);
-    pos = copy_source_bucket_name.find("/");
-    if (pos == std::string::npos) {
-      ret = -EINVAL;
-      ldpp_dout(this, 5) << "x-amz-copy-source bad format" << dendl;
-      return ret;
-    }
-    copy_source_object_name =
-      copy_source_bucket_name.substr(pos + 1, copy_source_bucket_name.size());
-    copy_source_bucket_name = copy_source_bucket_name.substr(0, pos);
-#define VERSION_ID_STR "?versionId="
-    pos = copy_source_object_name.find(VERSION_ID_STR);
-    if (pos == std::string::npos) {
-      copy_source_object_name = url_decode(copy_source_object_name);
-    } else {
-      copy_source_version_id =
-	copy_source_object_name.substr(pos + sizeof(VERSION_ID_STR) - 1);
-      copy_source_object_name =
-	url_decode(copy_source_object_name.substr(0, pos));
-    }
-    pos = copy_source_bucket_name.find(":");
-    if (pos == std::string::npos) {
-       copy_source_tenant_name = s->src_tenant_name;
-    } else {
-       copy_source_tenant_name = copy_source_bucket_name.substr(0, pos);
-       copy_source_bucket_name = copy_source_bucket_name.substr(pos + 1, copy_source_bucket_name.size());
-       if (copy_source_bucket_name.empty()) {
-         ret = -EINVAL;
-         ldpp_dout(this, 5) << "source bucket name is empty" << dendl;
-         return ret;
-       }
-    }
-    ret = store->getRados()->get_bucket_info(store->svc(),
-                                 copy_source_tenant_name,
-                                 copy_source_bucket_name,
-                                 copy_source_bucket_info,
-                                 NULL, s->yield, &src_attrs);
-    if (ret < 0) {
-      ldpp_dout(this, 5) << __func__ << "(): get_bucket_info() returned ret=" << ret << dendl;
-      return ret;
-    }
-
-    /* handle x-amz-copy-source-range */
-
-    if (copy_source_range) {
-      string range = copy_source_range;
-      pos = range.find("bytes=");
-      if (pos == std::string::npos || pos != 0) {
-        ret = -EINVAL;
-        ldpp_dout(this, 5) << "x-amz-copy-source-range bad format" << dendl;
-        return ret;
-      }
-      /* 6 is the length of "bytes=" */
-      range = range.substr(pos + 6);
-      pos = range.find("-");
-      if (pos == std::string::npos) {
-        ret = -EINVAL;
-        ldpp_dout(this, 5) << "x-amz-copy-source-range bad format" << dendl;
-        return ret;
-      }
-      string first = range.substr(0, pos);
-      string last = range.substr(pos + 1);
-      if (first.find_first_not_of("0123456789") != std::string::npos || last.find_first_not_of("0123456789") != std::string::npos)
-      {
-        ldpp_dout(this, 5) << "x-amz-copy-source-range bad format not an integer" << dendl;
-        ret = -EINVAL;
-        return ret;
-      }
-      copy_source_range_fst = strtoull(first.c_str(), NULL, 10);
-      copy_source_range_lst = strtoull(last.c_str(), NULL, 10);
-      if (copy_source_range_fst > copy_source_range_lst)
-      {
-        ret = -ERANGE;
-        ldpp_dout(this, 5) << "x-amz-copy-source-range bad format first number bigger than second" << dendl;
-        return ret;
-      }
-    }
-
-  } /* copy_source */
 
   /* handle object tagging */
   auto tag_str = s->info.env->get("HTTP_X_AMZ_TAGGING");
@@ -2663,7 +2575,7 @@ int RGWPutObj_ObjStore_S3::get_encrypt_filter(
   if (!multipart_upload_id.empty()) {
     RGWMPObj mp(s->object->get_name(), multipart_upload_id);
     rgw_obj obj;
-    obj.init_ns(s->bucket->get_bi(), mp.get_meta(), RGW_OBJ_NS_MULTIPART);
+    obj.init_ns(s->bucket->get_key(), mp.get_meta(), RGW_OBJ_NS_MULTIPART);
     obj.set_in_extra_data(true);
     map<string, bufferlist> xattrs;
     res = get_obj_attrs(store, s, obj, xattrs);
@@ -3303,11 +3215,11 @@ int RGWCopyObj_ObjStore_S3::get_params()
   auto tmp_md_d = s->info.env->get("HTTP_X_AMZ_METADATA_DIRECTIVE");
   if (tmp_md_d) {
     if (strcasecmp(tmp_md_d, "COPY") == 0) {
-      attrs_mod = RGWRados::ATTRSMOD_NONE;
+      attrs_mod = rgw::sal::ATTRSMOD_NONE;
     } else if (strcasecmp(tmp_md_d, "REPLACE") == 0) {
-      attrs_mod = RGWRados::ATTRSMOD_REPLACE;
+      attrs_mod = rgw::sal::ATTRSMOD_REPLACE;
     } else if (!source_zone.empty()) {
-      attrs_mod = RGWRados::ATTRSMOD_NONE; // default for intra-zone_group copy
+      attrs_mod = rgw::sal::ATTRSMOD_NONE; // default for intra-zone_group copy
     } else {
       s->err.message = "Unknown metadata directive.";
       ldpp_dout(this, 0) << s->err.message << dendl;
@@ -3321,7 +3233,7 @@ int RGWCopyObj_ObjStore_S3::get_params()
       (dest_bucket_name.compare(src_bucket_name) == 0) &&
       (dest_obj_name.compare(src_object->get_name()) == 0) &&
       src_object->get_instance().empty() &&
-      (attrs_mod != RGWRados::ATTRSMOD_REPLACE)) {
+      (attrs_mod != rgw::sal::ATTRSMOD_REPLACE)) {
     need_to_check_storage_class = true;
   }
 
@@ -4732,6 +4644,10 @@ int RGWHandler_REST_S3::postauth_init()
   rgw_parse_url_bucket(t->url_bucket, s->user->get_tenant(),
 		      s->bucket_tenant, s->bucket_name);
 
+  if (s->auth.identity->get_identity_type() == TYPE_ROLE) {
+    s->bucket_tenant = s->auth.identity->get_role_tenant();
+  }
+
   dout(10) << "s->object=" << s->object
            << " s->bucket=" << rgw_make_bucket_entry_name(s->bucket_tenant, s->bucket_name) << dendl;
 
@@ -4949,7 +4865,7 @@ bool RGWHandler_REST_S3Website::web_dir() const {
     subdir_name.pop_back();
   }
 
-  rgw_obj obj(s->bucket->get_bi(), subdir_name);
+  rgw_obj obj(s->bucket->get_key(), subdir_name);
 
   RGWObjectCtx& obj_ctx = *static_cast<RGWObjectCtx *>(s->obj_ctx);
   obj_ctx.set_atomic(obj);
@@ -4993,7 +4909,7 @@ int RGWHandler_REST_S3Website::retarget(RGWOp* op, RGWOp** new_op) {
       return -ERR_NO_SUCH_BUCKET;
   }
 
-  s->bucket_attrs = s->bucket->get_attrs().attrs;
+  s->bucket_attrs = s->bucket->get_attrs();
 
   if (!s->bucket->get_info().has_website) {
       // TODO-FUTURE: if the bucket has no WebsiteConfig, expose it here
@@ -5134,9 +5050,13 @@ int RGWHandler_REST_S3Website::error_handler(int err_no,
   ldpp_dout(s, 10) << "RGWHandler_REST_S3Website::error_handler err_no=" << err_no << " http_ret=" << http_error_code << dendl;
 
   RGWBWRoutingRule rrule;
-  bool should_redirect =
-    s->bucket->get_info().website_conf.should_redirect(original_object_name,
-                                                http_error_code, &rrule);
+  bool have_bucket = !rgw::sal::RGWBucket::empty(s->bucket.get());
+  bool should_redirect = false;
+  if (have_bucket) {
+    should_redirect =
+      s->bucket->get_info().website_conf.should_redirect(original_object_name,
+							 http_error_code, &rrule);
+  }
 
   if (should_redirect) {
     const string& hostname = s->info.env->get("HTTP_HOST", "");
@@ -5155,7 +5075,7 @@ int RGWHandler_REST_S3Website::error_handler(int err_no,
   } else if (err_no == -ERR_WEBSITE_REDIRECT) {
     // Do nothing here, this redirect will be handled in abort_early's ERR_WEBSITE_REDIRECT block
     // Do NOT fire the ErrorDoc handler
-  } else if (!s->bucket->get_info().website_conf.error_doc.empty()) {
+  } else if (have_bucket && !s->bucket->get_info().website_conf.error_doc.empty()) {
     /* This serves an entire page!
        On success, it will return zero, and no further content should be sent to the socket
        On failure, we need the double-error handler

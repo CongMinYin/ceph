@@ -619,10 +619,10 @@ class TestClientRecovery(CephFSTestCase):
 
         self.mount_a.kill_cleanup()
 
-    def test_reconnect_after_blacklisted(self):
+    def test_reconnect_after_blocklisted(self):
         """
-        Test reconnect after blacklisted.
-        - writing to a fd that was opened before blacklist should return -EBADF
+        Test reconnect after blocklisted.
+        - writing to a fd that was opened before blocklist should return -EBADF
         - reading/writing to a file with lost file locks should return -EIO
         - readonly fd should continue to work
         """
@@ -630,17 +630,17 @@ class TestClientRecovery(CephFSTestCase):
         self.mount_a.umount_wait()
 
         if isinstance(self.mount_a, FuseMount):
-            self.mount_a.mount(mount_options=['--client_reconnect_stale=1', '--fuse_disable_pagecache=1'])
+            self.mount_a.mount(mntopts=['--client_reconnect_stale=1', '--fuse_disable_pagecache=1'])
         else:
             try:
-                self.mount_a.mount(mount_options=['recover_session=clean'])
+                self.mount_a.mount(mntopts=['recover_session=clean'])
             except CommandFailedError:
                 self.mount_a.kill_cleanup()
                 self.skipTest("Not implemented in current kernel")
 
         self.mount_a.wait_until_mounted()
 
-        path = os.path.join(self.mount_a.mountpoint, 'testfile_reconnect_after_blacklisted')
+        path = os.path.join(self.mount_a.mountpoint, 'testfile_reconnect_after_blocklisted')
         pyscript = dedent("""
             import os
             import sys
@@ -660,7 +660,7 @@ class TestClientRecovery(CephFSTestCase):
             os.read(fd4, 1);
             fcntl.flock(fd4, fcntl.LOCK_SH | fcntl.LOCK_NB)
 
-            print("blacklist")
+            print("blocklist")
             sys.stdout.flush()
 
             sys.stdin.readline()
@@ -669,7 +669,7 @@ class TestClientRecovery(CephFSTestCase):
             time.sleep(10);
 
             # trigger 'open session' message. kclient relies on 'session reject' message
-            # to detect if itself is blacklisted
+            # to detect if itself is blocklisted
             try:
                 os.stat("{path}.1")
             except:

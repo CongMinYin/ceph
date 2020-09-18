@@ -234,8 +234,8 @@ class CRUSHMap(ceph_module.BasePyCRUSH):
             return None
 
         try:
-            first_take = [s for s in rule['steps'] if s['op'] == 'take'][0]
-        except IndexError:
+            first_take = next(s for s in rule['steps'] if s.get('op') == 'take')
+        except StopIteration:
             logging.warning("CRUSH rule '{0}' has no 'take' step".format(
                 rule_name))
             return None
@@ -307,10 +307,25 @@ class CLICommand(object):
 
     def call(self, mgr, cmd_dict, inbuf):
         kwargs = {}
+        kwargs_switch = False
         for a, d in self.args_dict.items():
             if 'req' in d and d['req'] == "false" and a not in cmd_dict:
                 continue
-            kwargs[a.replace("-", "_")] = cmd_dict[a]
+
+            if isinstance(cmd_dict[a], str) and '=' in cmd_dict[a]:
+                k, arg = cmd_dict[a].split('=', 1)
+                if k in self.args_dict:
+                    kwargs_switch = True
+
+            if kwargs_switch:
+                try:
+                    k, arg = cmd_dict[a].split('=', 1)
+                except ValueError as e:
+                    mgr.log.error('found positional arg after switching to kwarg parsing')
+                    return -errno.EINVAL, '', 'Error EINVAL: postitional arg not allowed after kwarg'
+                kwargs[k.replace("-", "_")] = arg
+            else:
+                kwargs[a.replace("-", "_")] = cmd_dict[a]
         if inbuf:
             kwargs['inbuf'] = inbuf
         assert self.func

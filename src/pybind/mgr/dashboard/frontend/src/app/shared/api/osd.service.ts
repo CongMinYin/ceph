@@ -1,7 +1,7 @@
 import { HttpClient } from '@angular/common/http';
 import { Injectable } from '@angular/core';
 
-import * as _ from 'lodash';
+import _ from 'lodash';
 import { map } from 'rxjs/operators';
 
 import { CdDevice } from '../models/devices';
@@ -78,7 +78,6 @@ export class OsdService {
     interface OsdData {
       osd_map: { [key: string]: any };
       osd_metadata: { [key: string]: any };
-      histogram: { [key: string]: object };
       smart: { [device_identifier: string]: any };
     }
     return this.http.get<OsdData>(`${this.path}/${id}`);

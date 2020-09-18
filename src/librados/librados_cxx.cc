@@ -649,7 +649,7 @@ void librados::ObjectWriteOperation::set_redirect(const std::string& tgt_obj,
 			  tgt_ioctx.io_ctx_impl->oloc, tgt_version, flag);
 }
 
-void librados::ObjectWriteOperation::set_chunk(uint64_t src_offset,
+void librados::ObjectReadOperation::set_chunk(uint64_t src_offset,
 					       uint64_t src_length,
 					       const IoCtx& tgt_ioctx,
 					       string tgt_oid,
@@ -2625,9 +2625,9 @@ int librados::Rados::ioctx_create2(int64_t pool_id, IoCtx &io)
   return 0;
 }
 
-void librados::Rados::test_blacklist_self(bool set)
+void librados::Rados::test_blocklist_self(bool set)
 {
-  client->blacklist_self(set);
+  client->blocklist_self(set);
 }
 
 int librados::Rados::get_pool_stats(std::list<string>& v,
@@ -2810,10 +2810,14 @@ int librados::Rados::wait_for_latest_osdmap()
   return client->wait_for_latest_osdmap();
 }
 
-int librados::Rados::blacklist_add(const std::string& client_address,
+int librados::Rados::blocklist_add(const std::string& client_address,
 				   uint32_t expire_seconds)
 {
-  return client->blacklist_add(client_address, expire_seconds);
+  return client->blocklist_add(client_address, expire_seconds);
+}
+
+std::string librados::Rados::get_addrs() const {
+  return client->get_addrs();
 }
 
 librados::PoolAsyncCompletion *librados::Rados::pool_async_create_completion()

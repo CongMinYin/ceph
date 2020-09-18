@@ -113,7 +113,7 @@ public:
     }
   }
 
-  void dump(ceph::Formatter *f) const;
+  void dump(ceph::Formatter *f, bool cap_dump=false) const;
   void push_pv(version_t pv)
   {
     ceph_assert(projected.empty() || projected.back() != pv);
@@ -384,6 +384,10 @@ public:
 
   int check_access(CInode *in, unsigned mask, int caller_uid, int caller_gid,
 		   const std::vector<uint64_t> *gid_list, int new_uid, int new_gid);
+
+  bool fs_name_capable(std::string_view fs_name, unsigned mask) const {
+    return auth_caps.fs_name_capable(fs_name, mask);
+  }
 
   void set_connection(ConnectionRef con) {
     connection = std::move(con);

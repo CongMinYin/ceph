@@ -1591,6 +1591,12 @@ void ProtocolV2::execute_establishing(
   trigger_state(state_t::ESTABLISHING, write_state_t::delay, false);
   if (existing_conn) {
     existing_conn->protocol->close(dispatch_reset, std::move(accept_me));
+    if (unlikely(state != state_t::ESTABLISHING)) {
+      logger().warn("{} triggered {} during execute_establishing(), "
+                    "the accept event will not be delivered!",
+                    conn, get_state_name(state));
+      abort_protocol();
+    }
   } else {
     accept_me();
   }
@@ -1902,8 +1908,8 @@ seastar::future<> ProtocolV2::read_message(utime_t throttle_stamp)
     // elsewhere.  in that case it doesn't matter if we "got" it or not.
     uint64_t cur_seq = conn.in_seq;
     if (message->get_seq() <= cur_seq) {
-      logger().error("{} got old message {} <= {} {} {}, discarding",
-                     conn, message->get_seq(), cur_seq, message, *message);
+      logger().error("{} got old message {} <= {} {}, discarding",
+                     conn, message->get_seq(), cur_seq, *message);
       if (HAVE_FEATURE(conn.features, RECONNECT_SEQ) &&
           local_conf()->ms_die_on_old_message) {
         ceph_assert(0 == "old msgs despite reconnect_seq feature");

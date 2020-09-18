@@ -73,10 +73,6 @@ export class GrafanaComponent implements OnInit, OnChanges {
         value: 'from=now-1d%2Fd&to=now-1d%2Fd'
       },
       {
-        name: $localize`Today`,
-        value: 'from=now%2Fd&to=now%2Fd'
-      },
-      {
         name: $localize`Today so far`,
         value: 'from=now%2Fd&to=now'
       },
@@ -97,10 +93,6 @@ export class GrafanaComponent implements OnInit, OnChanges {
         value: 'from=now-1w%2Fw&to=now-1w%2Fw'
       },
       {
-        name: $localize`This week`,
-        value: 'from=now%2Fw&to=now%2Fw'
-      },
-      {
         name: $localize`This week so far`,
         value: 'from=now%2Fw&to=now'
       },
@@ -111,10 +103,6 @@ export class GrafanaComponent implements OnInit, OnChanges {
       {
         name: $localize`Previous month`,
         value: 'from=now-1M%2FM&to=now-1M%2FM'
-      },
-      {
-        name: $localize`This month`,
-        value: 'from=now%2FM&to=now%2FM'
       },
       {
         name: $localize`This month so far`,
@@ -141,10 +129,6 @@ export class GrafanaComponent implements OnInit, OnChanges {
         value: 'from=now-1y%2Fy&to=now-1y%2Fy'
       },
       {
-        name: $localize`This year`,
-        value: 'from=now%2Fy&to=now%2Fy'
-      },
-      {
         name: $localize`This year so far`,
         value: 'from=now%2Fy&to=now'
       },
@@ -164,7 +148,8 @@ export class GrafanaComponent implements OnInit, OnChanges {
     this.styles = {
       one: 'grafana_one',
       two: 'grafana_two',
-      three: 'grafana_three'
+      three: 'grafana_three',
+      four: 'grafana_four'
     };
 
     this.settingsService.ifSettingConfigured('api/grafana/url', (url) => {

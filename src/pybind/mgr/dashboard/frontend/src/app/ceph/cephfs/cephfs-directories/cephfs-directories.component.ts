@@ -9,8 +9,8 @@ import {
   TreeNode,
   TREE_ACTIONS
 } from 'angular-tree-component';
-import * as _ from 'lodash';
-import * as moment from 'moment';
+import _ from 'lodash';
+import moment from 'moment';
 
 import { CephfsService } from '../../../shared/api/cephfs.service';
 import { ConfirmationModalComponent } from '../../../shared/components/confirmation-modal/confirmation-modal.component';
@@ -486,7 +486,7 @@ export class CephfsDirectoriesComponent implements OnInit, OnChanges {
         : values[key] === 0
         ? this.actionLabels.UNSET
         : $localize`Updated`;
-    this.cephfsService.updateQuota(this.id, path, values).subscribe(() => {
+    this.cephfsService.quota(this.id, path, values).subscribe(() => {
       if (onSuccess) {
         onSuccess();
       }

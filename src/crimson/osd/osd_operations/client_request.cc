@@ -1,6 +1,11 @@
 // -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
 // vim: ts=8 sw=2 smarttab
 
+#define BOOST_MPL_CFG_NO_PREPROCESSED_HEADERS
+#if !defined(BOOST_MPL_LIMIT_LIST_SIZE)
+#   define BOOST_MPL_LIMIT_LIST_SIZE 30
+#endif
+
 #include <seastar/core/future.hh>
 
 #include "messages/MOSDOp.h"
@@ -69,9 +74,7 @@ seastar::future<> ClientRequest::start()
 	return with_blocking_future(osd.wait_for_pg(m->get_spg()));
       }).then([this, opref](Ref<PG> pgref) {
 	PG &pg = *pgref;
-	if (__builtin_expect(m->get_map_epoch()
-			      < pg.get_info().history.same_primary_since,
-			     false)) {
+	if (pg.can_discard_op(*m)) {
 	  return osd.send_incremental_map(conn.get(), m->get_map_epoch());
 	}
 	return with_blocking_future(
@@ -98,12 +101,10 @@ seastar::future<> ClientRequest::start()
 	return seastar::stop_iteration::yes;
       }).handle_exception_type([](crimson::common::actingset_changed& e) {
 	if (e.is_primary()) {
-	  crimson::get_logger(ceph_subsys_osd).debug(
-	      "operation restart, acting set changed");
+	  logger().debug("operation restart, acting set changed");
 	  return seastar::stop_iteration::no;
 	} else {
-	  crimson::get_logger(ceph_subsys_osd).debug(
-	      "operation abort, up primary changed");
+	  logger().debug("operation abort, up primary changed");
 	  return seastar::stop_iteration::yes;
 	}
       });
@@ -137,26 +138,62 @@ seastar::future<> ClientRequest::process_op(
     return seastar::now();
   }).then([this, &pg] {
     return with_blocking_future(handle.enter(pp(pg).get_obc));
-  }).then([this, &pg]() {
+  }).then([this, &pg]() -> PG::load_obc_ertr::future<> {
     op_info.set_from_op(&*m, *pg.get_osdmap());
-    return pg.with_locked_obc(
-      m,
-      op_info,
-      this,
-      [this, &pg](auto obc) {
-	return with_blocking_future(handle.enter(pp(pg).process)
-	).then([this, &pg, obc]() {
-	  return pg.do_osd_ops(m, obc, op_info);
-	}).then([this](Ref<MOSDOpReply> reply) {
-	  return conn->send(reply);
-	});
+    return pg.with_locked_obc(m, op_info, this, [this, &pg](auto obc) {
+      return with_blocking_future(
+        handle.enter(pp(pg).process)
+      ).then([this, &pg, obc] {
+        if (!pg.is_primary()) {
+           // primary can handle both normal ops and balanced reads
+          if (is_misdirected(pg)) {
+            logger().trace("process_op: dropping misdirected op");
+            return seastar::make_ready_future<Ref<MOSDOpReply>>();
+          } else if (const hobject_t& hoid = m->get_hobj();
+                     !pg.get_peering_state().can_serve_replica_read(hoid)) {
+            auto reply = make_message<MOSDOpReply>(
+              m.get(), -EAGAIN, pg.get_osdmap_epoch(),
+              m->get_flags() & (CEPH_OSD_FLAG_ACK|CEPH_OSD_FLAG_ONDISK),
+              !m->has_flag(CEPH_OSD_FLAG_RETURNVEC));
+            return seastar::make_ready_future<Ref<MOSDOpReply>>(std::move(reply));
+          }
+        }
+        return pg.do_osd_ops(m, obc, op_info);
+      }).then([this](Ref<MOSDOpReply> reply) {
+        if (reply) {
+          return conn->send(std::move(reply));
+        } else {
+          return seastar::now();
+        }
       });
+    });
   }).safe_then([pgref=std::move(pgref)] {
     return seastar::now();
   }, PG::load_obc_ertr::all_same_way([](auto &code) {
     logger().error("ClientRequest saw error code {}", code);
     return seastar::now();
   }));
+}
+
+bool ClientRequest::is_misdirected(const PG& pg) const
+{
+  // otherwise take a closer look
+  if (const int flags = m->get_flags();
+      flags & CEPH_OSD_FLAG_BALANCE_READS ||
+      flags & CEPH_OSD_FLAG_LOCALIZE_READS) {
+    if (!op_info.may_read()) {
+      // no read found, so it can't be balanced read
+      return true;
+    }
+    if (op_info.may_write() || op_info.may_cache()) {
+      // write op, but i am not primary
+      return true;
+    }
+    // balanced reads; any replica will do
+    return pg.is_nonprimary();
+  }
+  // neither balanced nor localize reads
+  return true;
 }
 
 }

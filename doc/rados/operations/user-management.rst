@@ -244,7 +244,7 @@ The following entries describe valid capability profiles:
 ``profile bootstrap-osd`` (Monitor only)
 
 :Description: Gives a user permissions to bootstrap an OSD. Conferred on
-              deployment tools such as ``ceph-volume``, ``ceph-deploy``, etc.
+              deployment tools such as ``ceph-volume``, ``cephadm``, etc.
               so that they have permissions to add keys, etc. when
               bootstrapping an OSD.
 
@@ -252,21 +252,21 @@ The following entries describe valid capability profiles:
 ``profile bootstrap-mds`` (Monitor only)
 
 :Description: Gives a user permissions to bootstrap a metadata server.
-              Conferred on deployment tools such as ``ceph-deploy``, etc.
+              Conferred on deployment tools such as ``cephadm``, etc.
               so they have permissions to add keys, etc. when bootstrapping
               a metadata server.
 
 ``profile bootstrap-rbd`` (Monitor only)
 
 :Description: Gives a user permissions to bootstrap an RBD user.
-              Conferred on deployment tools such as ``ceph-deploy``, etc.
+              Conferred on deployment tools such as ``cephadm``, etc.
               so they have permissions to add keys, etc. when bootstrapping
               an RBD user.
 
 ``profile bootstrap-rbd-mirror`` (Monitor only)
 
 :Description: Gives a user permissions to bootstrap an ``rbd-mirror`` daemon
-              user. Conferred on deployment tools such as ``ceph-deploy``, etc.
+              user. Conferred on deployment tools such as ``cephadm``, etc.
               so they have permissions to add keys, etc. when bootstrapping
               an ``rbd-mirror`` daemon.
 
@@ -275,7 +275,7 @@ The following entries describe valid capability profiles:
 :Description: Gives a user permissions to manipulate RBD images. When used
               as a Monitor cap, it provides the minimal privileges required
               by an RBD client application; this includes the ability
-	      to blacklist other client users. When used as an OSD cap, it
+	      to blocklist other client users. When used as an OSD cap, it
               provides read-write access to the specified pool to an
 	      RBD client application. The Manager cap supports optional
               ``pool`` and ``namespace`` keyword arguments.

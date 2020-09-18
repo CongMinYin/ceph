@@ -5,6 +5,7 @@ import logging
 import pipes
 import os
 import re
+import shlex
 
 from tasks.util import get_remote_for_role
 from tasks.util.workunit import get_refspec_after_overrides
@@ -59,6 +60,14 @@ def task(ctx, config):
               FOO: bar
               BAZ: quux
             timeout: 3h
+
+    You can also pass optional arguments to the found workunits:
+
+        tasks:
+        - workunit:
+            clients:
+              all:
+                - test-ceph-helpers.sh test_get_config
 
     This task supports roles that include a ceph cluster, e.g.::
 
@@ -362,15 +371,18 @@ def _run_tests(ctx, refspec, role, tests, env, basedir,
     )
 
     workunits_file = '{tdir}/workunits.list.{role}'.format(tdir=testdir, role=role)
-    workunits = sorted(misc.get_file(remote, workunits_file).decode().split('\0'))
+    workunits = sorted(remote.read_file(workunits_file).decode().split('\0'))
     assert workunits
 
     try:
         assert isinstance(tests, list)
         for spec in tests:
-            log.info('Running workunits matching %s on %s...', spec, role)
-            prefix = '{spec}/'.format(spec=spec)
-            to_run = [w for w in workunits if w == spec or w.startswith(prefix)]
+            dir_or_fname, *optional_args = shlex.split(spec)
+            log.info('Running workunits matching %s on %s...', dir_or_fname, role)
+            # match executables named "foo" or "foo/*" with workunit named
+            # "foo"
+            to_run = [w for w in workunits
+                      if os.path.commonpath([w, dir_or_fname]) == dir_or_fname]
             if not to_run:
                 raise RuntimeError('Spec did not match any workunits: {spec!r}'.format(spec=spec))
             for workunit in to_run:
@@ -409,7 +421,7 @@ def _run_tests(ctx, refspec, role, tests, env, basedir,
                 ])
                 remote.run(
                     logger=log.getChild(role),
-                    args=args,
+                    args=args + optional_args,
                     label="workunit test {workunit}".format(workunit=workunit)
                 )
                 if cleanup:

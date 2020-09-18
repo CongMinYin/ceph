@@ -77,6 +77,7 @@ extern const mds_gid_t MDS_GID_NONE;
 
 typedef int32_t fs_cluster_id_t;
 constexpr fs_cluster_id_t FS_CLUSTER_ID_NONE = -1;
+
 // The namespace ID of the anonymous default filesystem from legacy systems
 constexpr fs_cluster_id_t FS_CLUSTER_ID_ANONYMOUS = 0;
 
@@ -493,6 +494,11 @@ struct inode_t {
   }
 
   bool is_dirty_rstat() const { return !(rstat == accounted_rstat); }
+
+  uint64_t get_client_range(client_t client) const {
+    auto it = client_ranges.find(client);
+    return it != client_ranges.end() ? it->second.range.last : 0;
+  }
 
   uint64_t get_max_size() const {
     uint64_t max = 0;

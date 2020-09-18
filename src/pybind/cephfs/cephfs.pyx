@@ -508,7 +508,7 @@ def decode_cstr(val, encoding="utf-8"):
     Decode a byte string into a Python string.
 
     :param bytes val: byte string
-    :rtype: unicode or None
+    :rtype: str or None
     """
     if val is None:
         return None
@@ -2582,7 +2582,7 @@ cdef class LibCephFS(object):
         """
         Get the amount of time that the client has to return caps
 
-        In the event that a client does not return its caps, the MDS may blacklist
+        In the event that a client does not return its caps, the MDS may blocklist
         it after this timeout. Applications should check this value and ensure
         that they set the delegation timeout to a value lower than this.
         """

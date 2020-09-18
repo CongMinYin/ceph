@@ -5,7 +5,8 @@ from typing import Any, Dict, Union
 import logging
 import cherrypy
 
-from . import Controller, BaseController, Endpoint, ENDPOINT_MAP
+from . import Controller, BaseController, Endpoint, ENDPOINT_MAP, \
+    allow_empty_body
 from .. import mgr
 
 from ..tools import str_to_bool
@@ -254,6 +255,7 @@ class Docs(BaseController):
 
     @classmethod
     def _gen_paths(cls, all_endpoints):
+        # pylint: disable=R0912
         method_order = ['get', 'post', 'put', 'delete']
         paths = {}
         for path, endpoints in sorted(list(ENDPOINT_MAP.items()),
@@ -304,6 +306,13 @@ class Docs(BaseController):
                             'content': {
                                 'application/json': {
                                     'schema': cls._gen_schema_for_content(body_params)}}}
+
+                    if endpoint.query_params:
+                        query_params = cls._add_param_info(endpoint.query_params, p_info)
+                        methods[method.lower()]['requestBody'] = {
+                            'content': {
+                                'application/json': {
+                                    'schema': cls._gen_schema_for_content(query_params)}}}
 
                 if endpoint.is_secure:
                     methods[method.lower()]['security'] = [{'jwt': []}]
@@ -449,5 +458,6 @@ class Docs(BaseController):
 
     @Endpoint('POST', path="/", json_response=False,
               query_params="{all_endpoints}")
+    @allow_empty_body
     def _with_token(self, token, all_endpoints=False):
         return self._swagger_ui_page(all_endpoints, token)

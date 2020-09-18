@@ -1,6 +1,11 @@
 // -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
 // vim: ts=8 sw=2 smarttab
 
+#define BOOST_MPL_CFG_NO_PREPROCESSED_HEADERS
+#if !defined(BOOST_MPL_LIMIT_LIST_SIZE)
+#   define BOOST_MPL_LIMIT_LIST_SIZE 30
+#endif
+
 #include "heartbeat.h"
 
 #include <boost/range/join.hpp>
@@ -402,7 +407,7 @@ void Heartbeat::Connection::replaced()
   racing_detected = true;
   logger().warn("Heartbeat::Connection::replaced(): {} racing", *this);
   assert(conn != replaced_conn);
-  assert(!conn->is_connected());
+  assert(conn->is_connected());
 }
 
 void Heartbeat::Connection::reset()
@@ -649,6 +654,7 @@ bool Heartbeat::FailingPeers::add_pending(
   failure_pending.emplace(peer, failure_info_t{failed_since,
                                                osdmap->get_addrs(peer)});
   futures.push_back(heartbeat.monc.send_message(failure_report));
+  logger().info("{}: osd.{} failed for {}", __func__, peer, failed_for);
   return true;
 }
 
@@ -674,5 +680,6 @@ Heartbeat::FailingPeers::send_still_alive(
     0,
     heartbeat.service.get_osdmap_service().get_map()->get_epoch(),
     MOSDFailure::FLAG_ALIVE);
+  logger().info("{}: osd.{}", __func__, osd);
   return heartbeat.monc.send_message(still_alive);
 }

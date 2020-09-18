@@ -18,6 +18,11 @@
 #ifndef CEPH_OSD_TYPES_H
 #define CEPH_OSD_TYPES_H
 
+#define BOOST_MPL_CFG_NO_PREPROCESSED_HEADERS
+#if !defined(BOOST_MPL_LIMIT_LIST_SIZE)
+#   define BOOST_MPL_LIMIT_LIST_SIZE 30
+#endif
+
 #include <atomic>
 #include <sstream>
 #include <cstdio>
@@ -3927,6 +3932,7 @@ public:
   interval_set<uint64_t> get_dirty_regions() const;
   bool omap_is_dirty() const;
   bool object_is_exist() const;
+  bool is_clean_region(uint64_t offset, uint64_t len) const;
 
   void encode(ceph::buffer::list &bl) const;
   void decode(ceph::buffer::list::const_iterator &bl);
@@ -4704,10 +4710,10 @@ public:
     return it->second.need;
   }
 
-  void claim(pg_missing_set& o) {
+  void claim(pg_missing_set&& o) {
     static_assert(!TrackChanges, "Can't use claim with TrackChanges");
-    missing.swap(o.missing);
-    rmissing.swap(o.rmissing);
+    missing = std::move(o.missing);
+    rmissing = std::move(o.rmissing);
   }
 
   /*
@@ -5464,6 +5470,9 @@ public:
   bool is_empty() {
     return ref_delta.empty();
   }
+  uint64_t size() {
+    return ref_delta.size();
+  }
   friend std::ostream& operator<<(std::ostream& out, const object_ref_delta_t & ci);
 };
 
@@ -5578,6 +5587,39 @@ struct object_manifest_t {
     redirect_target = hobject_t();
     chunk_map.clear();
   }
+
+  /**
+   * calc_refs_to_inc_on_set
+   *
+   * Takes a manifest and returns the set of refs to
+   * increment upon set-chunk
+   *
+   * l should be nullptr if there are no clones, or 
+   * l and g may each be null if the corresponding clone does not exist.
+   * *this contains the set of new references to set
+   *
+   */
+  void calc_refs_to_inc_on_set(
+    const object_manifest_t* g, ///< [in] manifest for clone > *this
+    const object_manifest_t* l, ///< [in] manifest for clone < *this
+    object_ref_delta_t &delta    ///< [out] set of refs to drop
+  ) const;
+
+  /**
+   * calc_refs_to_drop_on_modify
+   *
+   * Takes a manifest and returns the set of refs to
+   * drop upon modification 
+   *
+   * l should be nullptr if there are no clones, or 
+   * l may be null if the corresponding clone does not exist.
+   *
+   */
+  void calc_refs_to_drop_on_modify(
+    const object_manifest_t* l, ///< [in] manifest for previous clone 
+    const ObjectCleanRegions& clean_regions, ///< [in] clean regions
+    object_ref_delta_t &delta    ///< [out] set of refs to drop
+  ) const;
 
   /**
    * calc_refs_to_drop_on_removal

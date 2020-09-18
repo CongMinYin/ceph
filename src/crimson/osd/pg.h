@@ -282,7 +282,7 @@ public:
   void check_recovery_sources(const OSDMapRef& newmap) final {
     // Not needed yet
   }
-  void check_blacklisted_watchers() final {
+  void check_blocklisted_watchers() final {
     // Not needed yet
   }
   void clear_primary_state() final {
@@ -427,6 +427,9 @@ public:
   bool is_primary() const final {
     return peering_state.is_primary();
   }
+  bool is_nonprimary() const {
+    return peering_state.is_nonprimary();
+  }
   bool is_peered() const final {
     return peering_state.is_peered();
   }
@@ -526,6 +529,7 @@ public:
 			   const MOSDRepOpReply& m);
 
   void print(std::ostream& os) const;
+  void dump_primary(Formatter*);
 
 private:
   void do_peering_event(
@@ -625,6 +629,10 @@ public:
     get_pool().info.opts.get(pool_opts_t::RECOVERY_OP_PRIORITY, &pri);
     return  pri > 0 ? pri : crimson::common::local_conf()->osd_recovery_op_priority;
   }
+  seastar::future<> mark_unfound_lost(int) {
+    // TODO: see PrimaryLogPG::mark_all_unfound_lost()
+    return seastar::now();
+  }
 
 private:
   // instead of seastar::gate, we use a boolean flag to indicate
@@ -662,6 +670,9 @@ private:
     return seastar::make_ready_future<bool>(true);
   }
 
+  template <typename MsgType>
+  bool can_discard_replica_op(const MsgType& m) const;
+  bool can_discard_op(const MOSDOp& m) const;
   bool is_missing_object(const hobject_t& soid) const {
     return peering_state.get_pg_log().get_missing().get_items().count(soid);
   }

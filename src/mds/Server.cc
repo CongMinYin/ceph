@@ -248,6 +248,7 @@ Server::Server(MDSRank *m, MetricsHandler *metrics_handler) :
   recall_throttle(g_conf().get_val<double>("mds_recall_max_decay_rate")),
   metrics_handler(metrics_handler)
 {
+  forward_all_requests_to_auth = g_conf().get_val<bool>("mds_forward_all_requests_to_auth");
   replay_unsafe_with_closed_session = g_conf().get_val<bool>("mds_replay_unsafe_with_closed_session");
   cap_revoke_eviction_timeout = g_conf().get_val<double>("mds_cap_revoke_eviction_timeout");
   max_snaps_per_dir = g_conf().get_val<uint64_t>("mds_max_snaps_per_dir");
@@ -467,11 +468,11 @@ void Server::finish_reclaim_session(Session *session, const ref_t<MClientReclaim
       send_reply = nullptr;
     }
 
-    bool blacklisted = mds->objecter->with_osdmap([target](const OSDMap &map) {
-	  return map.is_blacklisted(target->info.inst.addr);
+    bool blocklisted = mds->objecter->with_osdmap([target](const OSDMap &map) {
+	  return map.is_blocklisted(target->info.inst.addr);
 	});
 
-    if (blacklisted || !g_conf()->mds_session_blacklist_on_evict) {
+    if (blocklisted || !g_conf()->mds_session_blocklist_on_evict) {
       kill_session(target, send_reply);
     } else {
       std::stringstream ss;
@@ -490,6 +491,12 @@ void Server::handle_client_reclaim(const cref_t<MClientReclaim> &m)
 
   if (!session) {
     dout(0) << " ignoring sessionless msg " << *m << dendl;
+    return;
+  }
+
+  std::string_view fs_name = mds->get_fs_name();
+  if (!fs_name.empty() && !session->fs_name_capable(fs_name, MAY_READ)) {
+    dout(0) << " dropping message not allowed for this fs_name: " << *m << dendl;
     return;
   }
 
@@ -518,6 +525,16 @@ void Server::handle_client_session(const cref_t<MClientSession> &m)
     auto reply = make_message<MClientSession>(CEPH_SESSION_REJECT);
     reply->metadata["error_string"] = "sessionless";
     mds->send_message(reply, m->get_connection());
+    return;
+  }
+
+  std::string_view fs_name = mds->get_fs_name();
+  if (!fs_name.empty() && !session->fs_name_capable(fs_name, MAY_READ)) {
+    dout(0) << " dropping message not allowed for this fs_name: " << *m << dendl;
+    auto reply = make_message<MClientSession>(CEPH_SESSION_REJECT);
+    reply->metadata["error_string"] = "client doesn't have caps for FS \"" +
+				      std::string(fs_name) + "\"";
+    mds->send_message(std::move(reply), m->get_connection());
     return;
   }
 
@@ -590,14 +607,14 @@ void Server::handle_client_session(const cref_t<MClientSession> &m)
         log_session_status("REJECTED", err_str);
       };
 
-      bool blacklisted = mds->objecter->with_osdmap(
+      bool blocklisted = mds->objecter->with_osdmap(
 	  [&addr](const OSDMap &osd_map) -> bool {
-	    return osd_map.is_blacklisted(addr);
+	    return osd_map.is_blocklisted(addr);
 	  });
 
-      if (blacklisted) {
-	dout(10) << "rejecting blacklisted client " << addr << dendl;
-	send_reject_message("blacklisted");
+      if (blocklisted) {
+	dout(10) << "rejecting blocklisted client " << addr << dendl;
+	send_reject_message("blocklisted");
 	session->clear();
 	break;
       }
@@ -820,11 +837,12 @@ void Server::_session_logged(Session *session, uint64_t state_seq, bool open, ve
   } else if (session->is_closing() ||
 	     session->is_killing()) {
     // kill any lingering capabilities, leases, requests
+    bool killing = session->is_killing();
     while (!session->caps.empty()) {
       Capability *cap = session->caps.front();
       CInode *in = cap->get_inode();
       dout(20) << " killing capability " << ccap_string(cap->issued()) << " on " << *in << dendl;
-      mds->locker->remove_client_cap(in, cap, true);
+      mds->locker->remove_client_cap(in, cap, killing);
     }
     while (!session->leases.empty()) {
       ClientLease *r = session->leases.front();
@@ -905,8 +923,8 @@ version_t Server::prepare_force_open_sessions(map<client_t,entity_inst_t>& cm,
   mds->objecter->with_osdmap(
       [this, &cm, &cmm](const OSDMap &osd_map) {
 	for (auto p = cm.begin(); p != cm.end(); ) {
-	  if (osd_map.is_blacklisted(p->second.addr)) {
-	    dout(10) << " ignoring blacklisted client." << p->first
+	  if (osd_map.is_blocklisted(p->second.addr)) {
+	    dout(10) << " ignoring blocklisted client." << p->first
 		     << " (" <<  p->second.addr << ")" << dendl;
 	    cmm.erase(p->first);
 	    cm.erase(p++);
@@ -1144,7 +1162,7 @@ void Server::find_idle_sessions()
     dout(10) << "autoclosing stale session " << session->info.inst
 	     << " last renewed caps " << last_cap_renew_span << "s ago" << dendl;
 
-    if (g_conf()->mds_session_blacklist_on_timeout) {
+    if (g_conf()->mds_session_blocklist_on_timeout) {
       std::stringstream ss;
       mds->evict_client(session->get_client().v, false, true, ss, nullptr);
     } else {
@@ -1169,7 +1187,7 @@ void Server::evict_cap_revoke_non_responders() {
 
     std::stringstream ss;
     bool evicted = mds->evict_client(client.v, false,
-                                     g_conf()->mds_session_blacklist_on_evict,
+                                     g_conf()->mds_session_blocklist_on_evict,
                                      ss, nullptr);
     if (evicted && logger) {
       logger->inc(l_mdss_cap_revoke_eviction);
@@ -1178,8 +1196,8 @@ void Server::evict_cap_revoke_non_responders() {
 }
 
 void Server::handle_conf_change(const std::set<std::string>& changed) {
-  if (changed.count("mds_replay_unsafe_with_closed_session")) {
-    replay_unsafe_with_closed_session = g_conf().get_val<bool>("mds_replay_unsafe_with_closed_session");
+  if (changed.count("mds_forward_all_requests_to_auth")){
+    forward_all_requests_to_auth = g_conf().get_val<bool>("mds_forward_all_requests_to_auth");
   }
   if (changed.count("mds_cap_revoke_eviction_timeout")) {
     cap_revoke_eviction_timeout = g_conf().get_val<double>("mds_cap_revoke_eviction_timeout");
@@ -1228,7 +1246,7 @@ void Server::kill_session(Session *session, Context *on_safe, bool need_purge_in
   }
 }
 
-size_t Server::apply_blacklist(const std::set<entity_addr_t> &blacklist)
+size_t Server::apply_blocklist(const std::set<entity_addr_t> &blocklist)
 {
   bool prenautilus = mds->objecter->with_osdmap(
       [&](const OSDMap& o) {
@@ -1239,23 +1257,23 @@ size_t Server::apply_blacklist(const std::set<entity_addr_t> &blacklist)
   const auto& sessions = mds->sessionmap.get_sessions();
   for (const auto& p : sessions) {
     if (!p.first.is_client()) {
-      // Do not apply OSDMap blacklist to MDS daemons, we find out
+      // Do not apply OSDMap blocklist to MDS daemons, we find out
       // about their death via MDSMap.
       continue;
     }
 
     Session *s = p.second;
     auto inst_addr = s->info.inst.addr;
-    // blacklist entries are always TYPE_ANY for nautilus+
+    // blocklist entries are always TYPE_ANY for nautilus+
     inst_addr.set_type(entity_addr_t::TYPE_ANY);
-    if (blacklist.count(inst_addr)) {
+    if (blocklist.count(inst_addr)) {
       victims.push_back(s);
       continue;
     }
     if (prenautilus) {
       // ...except pre-nautilus, they were TYPE_LEGACY
       inst_addr.set_type(entity_addr_t::TYPE_LEGACY);
-      if (blacklist.count(inst_addr)) {
+      if (blocklist.count(inst_addr)) {
 	victims.push_back(s);
       }
     }
@@ -1265,7 +1283,7 @@ size_t Server::apply_blacklist(const std::set<entity_addr_t> &blacklist)
     kill_session(s, nullptr);
   }
 
-  dout(10) << "apply_blacklist: killed " << victims.size() << dendl;
+  dout(10) << "apply_blocklist: killed " << victims.size() << dendl;
 
   return victims.size();
 }
@@ -1544,18 +1562,18 @@ void Server::update_required_client_features()
       feature_bitset_t missing_features = required_client_features;
       missing_features -= session->info.client_metadata.features;
       if (!missing_features.empty()) {
-	bool blacklisted = mds->objecter->with_osdmap(
+	bool blocklisted = mds->objecter->with_osdmap(
 	    [session](const OSDMap &osd_map) -> bool {
-	      return osd_map.is_blacklisted(session->info.inst.addr);
+	      return osd_map.is_blocklisted(session->info.inst.addr);
 	    });
-	if (blacklisted)
+	if (blocklisted)
 	  continue;
 
 	mds->clog->warn() << "evicting session " << *session << ", missing required features '"
 			  << missing_features << "'";
 	std::stringstream ss;
 	mds->evict_client(session->get_client().v, false,
-			  g_conf()->mds_session_blacklist_on_evict, ss);
+			  g_conf()->mds_session_blocklist_on_evict, ss);
       }
     }
   }
@@ -1629,7 +1647,7 @@ void Server::reconnect_tick()
   dout(7) << "reconnect timed out, " << remaining_sessions.size()
           << " clients have not reconnected in time" << dendl;
 
-  // If we're doing blacklist evictions, use this to wait for them before
+  // If we're doing blocklist evictions, use this to wait for them before
   // proceeding to reconnect_gather_finish
   MDSGatherBuilder gather(g_ceph_context);
 
@@ -1651,7 +1669,7 @@ void Server::reconnect_tick()
 		      << ", after waiting " << elapse1
 		      << " seconds during MDS startup";
 
-    if (g_conf()->mds_session_blacklist_on_timeout) {
+    if (g_conf()->mds_session_blocklist_on_timeout) {
       std::stringstream ss;
       mds->evict_client(session->get_client().v, false, true, ss,
 			gather.new_sub());
@@ -2234,7 +2252,7 @@ void Server::set_trace_dist(const ref_t<MClientReply> &reply,
     DirStat ds;
     ds.frag = dir->get_frag();
     ds.auth = dir->get_dir_auth().first;
-    if (dir->is_auth() && !mdcache->forward_all_reqs_to_auth())
+    if (dir->is_auth() && !forward_all_requests_to_auth)
       dir->get_dist_spec(ds.dist, whoami);
 
     dir->encode_dirstat(bl, session->info, ds);
@@ -3374,6 +3392,8 @@ CInode* Server::rdlock_path_pin_ref(MDRequestRef& mdr,
     if (!no_want_auth)
       want_auth = true;
   } else {
+    if (!no_want_auth && forward_all_requests_to_auth)
+      want_auth = true;
     flags |= MDS_TRAVERSE_RDLOCK_PATH | MDS_TRAVERSE_RDLOCK_SNAP;
   }
   if (want_auth)
@@ -4395,6 +4415,7 @@ void Server::handle_client_openc(MDRequestRef& mdr)
     _inode->client_ranges[client].range.first = 0;
     _inode->client_ranges[client].range.last = _inode->layout.stripe_unit;
     _inode->client_ranges[client].follows = follows;
+    newi->mark_clientwriteable();
     cap->mark_clientwriteable();
   }
   
@@ -4545,7 +4566,7 @@ void Server::handle_client_readdir(MDRequestRef& mdr)
   DirStat ds;
   ds.frag = dir->get_frag();
   ds.auth = dir->get_dir_auth().first;
-  if (dir->is_auth() && !mdcache->forward_all_reqs_to_auth())
+  if (dir->is_auth() && !forward_all_requests_to_auth)
     dir->get_dist_spec(ds.dist, mds->get_nodeid());
 
   dir->encode_dirstat(dirbl, mdr->session->info, ds);
@@ -4699,14 +4720,16 @@ void Server::handle_client_readdir(MDRequestRef& mdr)
  */
 class C_MDS_inode_update_finish : public ServerLogContext {
   CInode *in;
-  bool truncating_smaller, changed_ranges, new_realm;
+  bool truncating_smaller, changed_ranges, adjust_realm;
 public:
   C_MDS_inode_update_finish(Server *s, MDRequestRef& r, CInode *i,
-			    bool sm=false, bool cr=false, bool nr=false) :
+			    bool sm=false, bool cr=false, bool ar=false) :
     ServerLogContext(s, r), in(i),
-    truncating_smaller(sm), changed_ranges(cr), new_realm(nr) { }
+    truncating_smaller(sm), changed_ranges(cr), adjust_realm(ar) { }
   void finish(int r) override {
     ceph_assert(r == 0);
+
+    int snap_op = (in->snaprealm ? CEPH_SNAP_OP_UPDATE : CEPH_SNAP_OP_SPLIT);
 
     // apply
     mdr->apply();
@@ -4719,10 +4742,9 @@ public:
       mds->mdcache->truncate_inode(in, mdr->ls);
     }
 
-    if (new_realm) {
-      int op = CEPH_SNAP_OP_SPLIT;
-      mds->mdcache->send_snap_update(in, 0, op);
-      mds->mdcache->do_realm_invalidate_and_update_notify(in, op);
+    if (adjust_realm) {
+      mds->mdcache->send_snap_update(in, 0, snap_op);
+      mds->mdcache->do_realm_invalidate_and_update_notify(in, snap_op);
     }
 
     get_mds()->balancer->hit_inode(in, META_POP_IWR);
@@ -4995,12 +5017,9 @@ void Server::handle_client_setattr(MDRequestRef& mdr)
     pi.inode->mtime = mdr->get_op_stamp();
 
     // adjust client's max_size?
-    CInode::mempool_inode::client_range_map new_ranges;
-    bool max_increased = false;
-    mds->locker->calc_new_client_ranges(cur, pi.inode->size, true, &new_ranges, &max_increased);
-    if (pi.inode->client_ranges != new_ranges) {
-      dout(10) << " client_ranges " << pi.inode->client_ranges << " -> " << new_ranges << dendl;
-      pi.inode->client_ranges = new_ranges;
+    if (mds->locker->calc_new_client_ranges(cur, pi.inode->size)) {
+      dout(10) << " client_ranges "  << cur->get_previous_projected_inode()->client_ranges
+	       << " -> " << pi.inode->client_ranges << dendl;
       changed_ranges = true;
     }
   }
@@ -5061,6 +5080,7 @@ void Server::do_open_truncate(MDRequestRef& mdr, int cmode)
     pi.inode->client_ranges[client].range.last = pi.inode->get_layout_size_increment();
     pi.inode->client_ranges[client].follows = realm->get_newest_seq();
     changed_ranges = true;
+    in->mark_clientwriteable();
     cap->mark_clientwriteable();
   }
   
@@ -5508,7 +5528,7 @@ void Server::handle_set_vxattr(MDRequestRef& mdr, CInode *cur)
     return;
   }
 
-  bool new_realm = false;
+  bool adjust_realm = false;
   if (name.compare(0, 15, "ceph.dir.layout") == 0) {
     if (!cur->is_dir()) {
       respond_to_request(mdr, -EINVAL);
@@ -5575,26 +5595,72 @@ void Server::handle_set_vxattr(MDRequestRef& mdr, CInode *cur)
     }
 
     if (quota.is_enable() && !cur->get_projected_srnode())
-      new_realm = true;
+      adjust_realm = true;
 
-    if (!xlock_policylock(mdr, cur, false, new_realm))
+    if (!xlock_policylock(mdr, cur, false, adjust_realm))
       return;
 
-    auto pi = cur->project_inode(mdr, false, new_realm);
+    if (cur->get_projected_inode()->quota == quota) {
+      respond_to_request(mdr, 0);
+      return;
+    }
+
+    auto pi = cur->project_inode(mdr, false, adjust_realm);
     pi.inode->quota = quota;
 
-    if (new_realm) {
-      SnapRealm *realm = cur->find_snaprealm();
-      auto seq = realm->get_newest_seq();
-      auto &newsnap = *pi.snapnode;
-      newsnap.created = seq;
-      newsnap.seq = seq;
-    }
+    if (adjust_realm)
+      pi.snapnode->created = pi.snapnode->seq = cur->find_snaprealm()->get_newest_seq();
+
     mdr->no_early_reply = true;
     pip = pi.inode.get();
 
     client_t exclude_ct = mdr->get_client();
     mdcache->broadcast_quota_to_client(cur, exclude_ct, true);
+  } else if (name == "ceph.dir.subvolume"sv) {
+    if (!cur->is_dir()) {
+      respond_to_request(mdr, -EINVAL);
+      return;
+    }
+
+    bool val;
+    try {
+      val = boost::lexical_cast<bool>(value);
+    } catch (boost::bad_lexical_cast const&) {
+      dout(10) << "bad vxattr value, unable to parse bool for " << name << dendl;
+      respond_to_request(mdr, -EINVAL);
+      return;
+    }
+
+    if (!xlock_policylock(mdr, cur, false, true))
+      return;
+
+    SnapRealm *realm = cur->find_snaprealm();
+    if (val) {
+      inodeno_t subvol_ino = realm->get_subvolume_ino();
+      // can't create subvolume inside another subvolume
+      if (subvol_ino && subvol_ino != cur->ino()) {
+	respond_to_request(mdr, -EINVAL);
+	return;
+      }
+    }
+
+    const auto srnode = cur->get_projected_srnode();
+    if (val == (srnode && srnode->is_subvolume())) {
+      respond_to_request(mdr, 0);
+      return;
+    }
+
+    auto pi = cur->project_inode(mdr, false, true);
+    if (!srnode)
+      pi.snapnode->created = pi.snapnode->seq = realm->get_newest_seq();
+    if (val)
+      pi.snapnode->mark_subvolume();
+    else
+      pi.snapnode->clear_subvolume();
+
+    mdr->no_early_reply = true;
+    pip = pi.inode.get();
+    adjust_realm = true;
   } else if (name == "ceph.dir.pin"sv) {
     if (!cur->is_dir() || cur->is_root()) {
       respond_to_request(mdr, -EINVAL);
@@ -5690,7 +5756,7 @@ void Server::handle_set_vxattr(MDRequestRef& mdr, CInode *cur)
   mdcache->journal_dirty_inode(mdr.get(), &le->metablob, cur);
 
   journal_and_reply(mdr, cur, 0, le, new C_MDS_inode_update_finish(this, mdr, cur,
-								   false, false, new_realm));
+								   false, false, adjust_realm));
   return;
 }
 
@@ -6033,6 +6099,7 @@ void Server::handle_client_mknod(MDRequestRef& mdr)
       _inode->client_ranges[client].range.first = 0;
       _inode->client_ranges[client].range.last = _inode->layout.stripe_unit;
       _inode->client_ranges[client].follows = follows;
+      newi->mark_clientwriteable();
       cap->mark_clientwriteable();
     }
   }
@@ -6289,12 +6356,22 @@ void Server::handle_client_link(MDRequestRef& mdr)
       return;
   }
 
+  CInode* target_pin = targeti->get_projected_parent_dir()->inode;
+  SnapRealm *target_realm = target_pin->find_snaprealm();
+  if (target_pin != dir->inode &&
+      target_realm->get_subvolume_ino() !=
+      dir->inode->find_snaprealm()->get_subvolume_ino()) {
+    dout(7) << "target is in different subvolume, failing..." << dendl;
+    respond_to_request(mdr, -EXDEV);
+    return;
+  }
+
   // go!
   ceph_assert(g_conf()->mds_kill_link_at != 1);
 
   // local or remote?
   if (targeti->is_auth()) 
-    _link_local(mdr, destdn, targeti);
+    _link_local(mdr, destdn, targeti, target_realm);
   else 
     _link_remote(mdr, true, destdn, targeti);
   mds->balancer->maybe_fragment(dir, false);  
@@ -6319,7 +6396,7 @@ public:
 };
 
 
-void Server::_link_local(MDRequestRef& mdr, CDentry *dn, CInode *targeti)
+void Server::_link_local(MDRequestRef& mdr, CDentry *dn, CInode *targeti, SnapRealm *target_realm)
 {
   dout(10) << "_link_local " << *dn << " to " << *targeti << dendl;
 
@@ -6339,10 +6416,10 @@ void Server::_link_local(MDRequestRef& mdr, CDentry *dn, CInode *targeti)
   pi.inode->version = tipv;
 
   bool adjust_realm = false;
-  if (!targeti->is_projected_snaprealm_global()) {
+  if (!target_realm->get_subvolume_ino() && !targeti->is_projected_snaprealm_global()) {
     sr_t *newsnap = targeti->project_snaprealm();
     targeti->mark_snaprealm_global(newsnap);
-    targeti->record_snaprealm_parent_dentry(newsnap, NULL, targeti->get_projected_parent_dn(), true);
+    targeti->record_snaprealm_parent_dentry(newsnap, target_realm, targeti->get_projected_parent_dn(), true);
     adjust_realm = true;
   }
 
@@ -6594,10 +6671,13 @@ void Server::handle_peer_link_prep(MDRequestRef& mdr)
   if (mdr->peer_request->get_op() == MMDSPeerRequest::OP_LINKPREP) {
     inc = true;
     pi.inode->nlink++;
-    if (!targeti->is_projected_snaprealm_global()) {
+
+    CDentry *target_pdn = targeti->get_projected_parent_dn();
+    SnapRealm *target_realm = target_pdn->get_dir()->inode->find_snaprealm();
+    if (!target_realm->get_subvolume_ino() && !targeti->is_projected_snaprealm_global()) {
       sr_t *newsnap = targeti->project_snaprealm();
       targeti->mark_snaprealm_global(newsnap);
-      targeti->record_snaprealm_parent_dentry(newsnap, NULL, targeti->get_projected_parent_dn(), true);
+      targeti->record_snaprealm_parent_dentry(newsnap, target_realm, target_pdn, true);
       adjust_realm = true;
       realm_projected = true;
     }
@@ -6977,7 +7057,7 @@ void Server::handle_client_unlink(MDRequestRef& mdr)
   if (!mdr->more()->desti_srnode) {
     if (in->is_projected_snaprealm_global()) {
       sr_t *new_srnode = in->prepare_new_srnode(0);
-      in->record_snaprealm_parent_dentry(new_srnode, NULL, dn, dnl->is_primary());
+      in->record_snaprealm_parent_dentry(new_srnode, nullptr, dn, dnl->is_primary());
       // dropping the last linkage or dropping the last remote linkage,
       // detch the inode from global snaprealm
       auto nlink = in->get_projected_inode()->nlink;
@@ -7831,6 +7911,21 @@ void Server::handle_client_rename(MDRequestRef& mdr)
   }
   */
 
+  SnapRealm *dest_realm = nullptr;
+  SnapRealm *src_realm = nullptr;
+  if (!linkmerge) {
+    dest_realm = destdir->inode->find_snaprealm();
+    if (srcdir->inode == destdir->inode)
+      src_realm = dest_realm;
+    else
+      src_realm = srcdir->inode->find_snaprealm();
+    if (src_realm != dest_realm &&
+	src_realm->get_subvolume_ino() != dest_realm->get_subvolume_ino()) {
+      respond_to_request(mdr, -EXDEV);
+      return;
+    }
+  }
+
   ceph_assert(g_conf()->mds_kill_rename_at != 1);
 
   // -- open all srcdn inode frags, if any --
@@ -7861,7 +7956,7 @@ void Server::handle_client_rename(MDRequestRef& mdr)
 	srci->get_projected_inode()->nlink == 1 &&
 	srci->is_projected_snaprealm_global()) {
       sr_t *new_srnode = srci->prepare_new_srnode(0);
-      srci->record_snaprealm_parent_dentry(new_srnode, NULL, destdn, false);
+      srci->record_snaprealm_parent_dentry(new_srnode, nullptr, destdn, false);
 
       srci->clear_snaprealm_global(new_srnode);
       mdr->more()->srci_srnode = new_srnode;
@@ -7870,7 +7965,7 @@ void Server::handle_client_rename(MDRequestRef& mdr)
     if (oldin && !mdr->more()->desti_srnode) {
       if (oldin->is_projected_snaprealm_global()) {
 	sr_t *new_srnode = oldin->prepare_new_srnode(0);
-	oldin->record_snaprealm_parent_dentry(new_srnode, NULL, destdn, destdnl->is_primary());
+	oldin->record_snaprealm_parent_dentry(new_srnode, dest_realm, destdn, destdnl->is_primary());
 	// dropping the last linkage or dropping the last remote linkage,
 	// detch the inode from global snaprealm
 	auto nlink = oldin->get_projected_inode()->nlink;
@@ -7880,7 +7975,6 @@ void Server::handle_client_rename(MDRequestRef& mdr)
 	  oldin->clear_snaprealm_global(new_srnode);
 	mdr->more()->desti_srnode = new_srnode;
       } else if (destdnl->is_primary()) {
-	SnapRealm *dest_realm = destdir->inode->find_snaprealm();
 	snapid_t follows = dest_realm->get_newest_seq();
 	if (oldin->snaprealm || follows + 1 > oldin->get_oldest_snap()) {
 	  sr_t *new_srnode = oldin->prepare_new_srnode(follows);
@@ -7890,13 +7984,11 @@ void Server::handle_client_rename(MDRequestRef& mdr)
       }
     }
     if (!mdr->more()->srci_srnode) {
-      SnapRealm *dest_realm = destdir->inode->find_snaprealm();
       if (srci->is_projected_snaprealm_global()) {
 	sr_t *new_srnode = srci->prepare_new_srnode(0);
-	srci->record_snaprealm_parent_dentry(new_srnode, dest_realm, srcdn, srcdnl->is_primary());
+	srci->record_snaprealm_parent_dentry(new_srnode, src_realm, srcdn, srcdnl->is_primary());
 	mdr->more()->srci_srnode = new_srnode;
       } else if (srcdnl->is_primary()) {
-	SnapRealm *src_realm = srcdir->inode->find_snaprealm();
 	snapid_t follows = src_realm->get_newest_seq();
 	if (src_realm != dest_realm &&
 	    (srci->snaprealm || follows + 1 > srci->get_oldest_snap())) {
@@ -9889,6 +9981,12 @@ void Server::handle_client_mksnap(MDRequestRef& mdr)
 
   if (!check_access(mdr, diri, MAY_WRITE|MAY_SNAPSHOT))
     return;
+
+  if (inodeno_t subvol_ino = diri->find_snaprealm()->get_subvolume_ino();
+      (subvol_ino && subvol_ino != diri->ino())) {
+    respond_to_request(mdr, -EPERM);
+    return;
+  }
 
   // check if we can create any more snapshots
   // we don't allow any more if we are already at or beyond the limit

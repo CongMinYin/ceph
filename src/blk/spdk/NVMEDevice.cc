@@ -47,8 +47,6 @@
 #undef dout_prefix
 #define dout_prefix *_dout << "bdev(" << sn << ") "
 
-thread_local SharedDriverQueueData *queue_t;
-
 static constexpr uint16_t data_buffer_default_num = 1024;
 
 static constexpr uint32_t data_buffer_size = 8192;
@@ -590,10 +588,6 @@ int NVMEManager::try_get(const spdk_nvme_transport_id& trid, SharedDriverData **
         spdk_env_init(&opts);
         spdk_unaffinitize_thread();
 
-        spdk_nvme_retry_count = g_ceph_context->_conf->bdev_nvme_retry_count;
-        if (spdk_nvme_retry_count < 0)
-          spdk_nvme_retry_count = SPDK_NVME_DEFAULT_RETRY_COUNT;
-
         std::unique_lock l(probe_queue_lock);
         while (!stopping) {
           if (!probe_queue.empty()) {
@@ -757,8 +751,6 @@ void NVMEDevice::close()
 {
   dout(1) << __func__ << dendl;
 
-  delete queue_t;
-  queue_t = nullptr;
   name.clear();
   driver->remove_device(this);
 
@@ -796,9 +788,9 @@ void NVMEDevice::aio_submit(IOContext *ioc)
     ceph_assert(ioc->num_pending.load() == 0);  // we should be only thread doing this
     // Only need to push the first entry
     ioc->nvme_task_first = ioc->nvme_task_last = nullptr;
-    if (!queue_t)
-	queue_t = new SharedDriverQueueData(this, driver);
-    queue_t->_aio_handle(t, ioc);
+
+    thread_local SharedDriverQueueData queue_t = SharedDriverQueueData(this, driver);
+    queue_t._aio_handle(t, ioc);
   }
 }
 
@@ -926,11 +918,11 @@ int NVMEDevice::read(uint64_t off, uint64_t len, bufferlist *pbl,
   bufferptr p = buffer::create_small_page_aligned(len);
   char *buf = p.c_str();
 
-  ceph_assert(ioc->nvme_task_first == nullptr);
-  ceph_assert(ioc->nvme_task_last == nullptr);
-  make_read_tasks(this, off, ioc, buf, len, &t, off, len);
+  // for sync read, need to control IOContext in itself
+  IOContext read_ioc(cct, nullptr);
+  make_read_tasks(this, off, &read_ioc, buf, len, &t, off, len);
   dout(5) << __func__ << " " << off << "~" << len << dendl;
-  aio_submit(ioc);
+  aio_submit(&read_ioc);
 
   pbl->push_back(std::move(p));
   return t.return_code;

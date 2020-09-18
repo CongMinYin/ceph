@@ -12,13 +12,13 @@ from cephadm.utils import forall_hosts
 from orchestrator import OrchestratorError
 from mgr_module import MonCommandFailed
 
-from cephadm.services.cephadmservice import CephadmService, CephadmDaemonSpec
+from cephadm.services.cephadmservice import CephadmDaemonSpec, CephService
 
 logger = logging.getLogger(__name__)
 DATEFMT = '%Y-%m-%dT%H:%M:%S.%f'
 
 
-class OSDService(CephadmService):
+class OSDService(CephService):
     TYPE = 'osd'
 
     def create_from_spec(self, drive_group: DriveGroupSpec) -> str:
@@ -32,7 +32,8 @@ class OSDService(CephadmService):
             cmd = self.driveselection_to_ceph_volume(drive_selection,
                                                      osd_id_claims.get(host, []))
             if not cmd:
-                logger.debug("No data_devices, skipping DriveGroup: {}".format(drive_group.service_id))
+                logger.debug("No data_devices, skipping DriveGroup: {}".format(
+                    drive_group.service_id))
                 return None
             env_vars: List[str] = [f"CEPH_VOLUME_OSDSPEC_AFFINITY={drive_group.service_id}"]
             ret_msg = self.create_single_host(
@@ -83,9 +84,9 @@ class OSDService(CephadmService):
                     continue
                 if osd_uuid_map.get(osd_id) != osd['tags']['ceph.osd_fsid']:
                     logger.debug('mismatched osd uuid (cluster has %s, osd '
-                                   'has %s)' % (
-                                       osd_uuid_map.get(osd_id),
-                                       osd['tags']['ceph.osd_fsid']))
+                                 'has %s)' % (
+                                     osd_uuid_map.get(osd_id),
+                                     osd['tags']['ceph.osd_fsid']))
                     continue
 
                 created.append(osd_id)
@@ -124,13 +125,19 @@ class OSDService(CephadmService):
         for host in matching_hosts:
             inventory_for_host = _find_inv_for_host(host, self.mgr.cache.devices)
             logger.debug(f"Found inventory for host {inventory_for_host}")
-            drive_selection = DriveSelection(drive_group, inventory_for_host)
+
+            # List of Daemons on that host
+            dd_for_spec = self.mgr.cache.get_daemons_by_service(drive_group.service_name())
+            dd_for_spec_and_host = [dd for dd in dd_for_spec if dd.hostname == host]
+
+            drive_selection = DriveSelection(drive_group, inventory_for_host,
+                                             existing_daemons=len(dd_for_spec_and_host))
             logger.debug(f"Found drive selection {drive_selection}")
             host_ds_map.append((host, drive_selection))
         return host_ds_map
 
-    def driveselection_to_ceph_volume(self,
-                                      drive_selection: DriveSelection,
+    @staticmethod
+    def driveselection_to_ceph_volume(drive_selection: DriveSelection,
                                       osd_id_claims: Optional[List[str]] = None,
                                       preview: bool = False) -> Optional[str]:
         logger.debug(f"Translating DriveGroup <{drive_selection.spec}> to ceph-volume command")
@@ -337,8 +344,8 @@ class RemoveUtil(object):
 
             if not osd.exists:
                 continue
-            self.mgr._remove_daemon(osd.fullname, osd.nodename)
-            logger.info(f"Successfully removed OSD <{osd.osd_id}> on {osd.nodename}")
+            self.mgr._remove_daemon(osd.fullname, osd.hostname)
+            logger.info(f"Successfully removed OSD <{osd.osd_id}> on {osd.hostname}")
             logger.debug(f"Removing {osd.osd_id} from the queue.")
 
         # self.mgr.to_remove_osds could change while this is processing (osds get added from the CLI)
@@ -385,7 +392,8 @@ class RemoveUtil(object):
         while not self.ok_to_stop(osds):
             if len(osds) <= 1:
                 # can't even stop one OSD, aborting
-                self.mgr.log.info("Can't even stop one OSD. Cluster is probably busy. Retrying later..")
+                self.mgr.log.info(
+                    "Can't even stop one OSD. Cluster is probably busy. Retrying later..")
                 return []
 
             # This potentially prolongs the global wait time.
@@ -462,7 +470,7 @@ class RemoveUtil(object):
         for k, v in self.mgr.get_store_prefix('osd_remove_queue').items():
             for osd in json.loads(v):
                 logger.debug(f"Loading osd ->{osd} from store")
-                osd_obj = OSD.from_json(json.loads(osd), ctx=self)
+                osd_obj = OSD.from_json(osd, ctx=self)
                 self.mgr.to_remove_osds.add(osd_obj)
 
 
@@ -516,7 +524,7 @@ class OSD:
         # If we wait for the osd to be drained
         self.force = force
         # The name of the node
-        self.nodename = hostname
+        self.hostname = hostname
         # The full name of the osd
         self.fullname = fullname
 
@@ -613,7 +621,7 @@ class OSD:
         out['stopped'] = self.stopped
         out['replace'] = self.replace
         out['force'] = self.force
-        out['nodename'] = self.nodename  # type: ignore
+        out['hostname'] = self.hostname  # type: ignore
 
         for k in ['drain_started_at', 'drain_stopped_at', 'drain_done_at', 'process_started_at']:
             if getattr(self, k):
@@ -630,6 +638,9 @@ class OSD:
             if inp.get(date_field):
                 inp.update({date_field: datetime.strptime(inp.get(date_field, ''), DATEFMT)})
         inp.update({'remove_util': ctx})
+        if 'nodename' in inp:
+            hostname = inp.pop('nodename')
+            inp['hostname'] = hostname
         return cls(**inp)
 
     def __hash__(self):
@@ -641,7 +652,7 @@ class OSD:
         return self.osd_id == other.osd_id
 
     def __repr__(self) -> str:
-        return f"<OSD>(osd_id={self.osd_id}, is_draining={self.is_draining})"
+        return f"<OSD>(osd_id={self.osd_id}, draining={self.draining})"
 
 
 class OSDQueue(Set):

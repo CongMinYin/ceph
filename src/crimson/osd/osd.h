@@ -15,7 +15,6 @@
 #include "crimson/common/gated.h"
 #include "crimson/net/chained_dispatchers.h"
 #include "crimson/admin/admin_socket.h"
-#include "crimson/admin/osd_admin.h"
 #include "crimson/common/simple_lru.h"
 #include "crimson/common/shared_lru.h"
 #include "crimson/mgr/client.h"
@@ -135,7 +134,7 @@ public:
   seastar::future<> stop();
 
   void dump_status(Formatter*) const;
-
+  void dump_pg_state_history(Formatter*) const;
   void print(std::ostream&) const;
 
   seastar::future<> send_incremental_map(crimson::net::Connection* conn,
@@ -232,6 +231,7 @@ public:
     std::unique_ptr<PGCreateInfo> info);
   blocking_future<Ref<PG>> wait_for_pg(
     spg_t pgid);
+  Ref<PG> get_pg(spg_t pgid);
 
   bool should_restart() const;
   seastar::future<> restart();

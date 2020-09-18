@@ -27,6 +27,7 @@
 #include "rgw_process.h"
 
 #include "rgw_zone.h"
+#include "rgw_sal_rados.h"
 
 #include "services/svc_zone.h"
 
@@ -858,7 +859,7 @@ int RGWPutObj_ObjStore_SWIFT::update_slo_segment_size(rgw_slo_entry& entry) {
     }
     bucket = bucket_info.bucket;
   } else {
-    bucket = s->bucket->get_bi();
+    bucket = s->bucket->get_key();
   }
 
   /* fetch the stored size of the seg (or error if not valid) */
@@ -1396,9 +1397,9 @@ int RGWCopyObj_ObjStore_SWIFT::get_params()
 
   const char * const fresh_meta = s->info.env->get("HTTP_X_FRESH_METADATA");
   if (fresh_meta && strcasecmp(fresh_meta, "TRUE") == 0) {
-    attrs_mod = RGWRados::ATTRSMOD_REPLACE;
+    attrs_mod = rgw::sal::ATTRSMOD_REPLACE;
   } else {
-    attrs_mod = RGWRados::ATTRSMOD_MERGE;
+    attrs_mod = rgw::sal::ATTRSMOD_MERGE;
   }
 
   int r = get_delete_at_param(s, delete_at);

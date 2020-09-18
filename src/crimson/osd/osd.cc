@@ -1,6 +1,11 @@
 // -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
 // vim: ts=8 sw=2 smarttab
 
+#define BOOST_MPL_CFG_NO_PREPROCESSED_HEADERS
+#if !defined(BOOST_MPL_LIMIT_LIST_SIZE)
+#   define BOOST_MPL_LIMIT_LIST_SIZE 30
+#endif
+
 #include "osd.h"
 
 #include <sys/utsname.h>
@@ -37,6 +42,8 @@
 #include "osd/PGPeeringEvent.h"
 #include "osd/PeeringState.h"
 
+#include "crimson/admin/osd_admin.h"
+#include "crimson/admin/pg_commands.h"
 #include "crimson/common/exception.h"
 #include "crimson/mon/MonClient.h"
 #include "crimson/net/Connection.h"
@@ -427,9 +434,14 @@ seastar::future<> OSD::start_asok_admin()
   return asok->start(asok_path).then([this] {
     return seastar::when_all_succeed(
       asok->register_admin_commands(),
-      asok->register_command(make_asok_hook<OsdStatusHook>(*this)),
+      asok->register_command(make_asok_hook<OsdStatusHook>(std::as_const(*this))),
       asok->register_command(make_asok_hook<SendBeaconHook>(*this)),
-      asok->register_command(make_asok_hook<FlushPgStatsHook>(*this)));
+      asok->register_command(make_asok_hook<FlushPgStatsHook>(*this)),
+      asok->register_command(make_asok_hook<DumpPGStateHistory>(std::as_const(*this))),
+      asok->register_command(make_asok_hook<SeastarMetricsHook>()),
+      // PG commands
+      asok->register_command(make_asok_hook<pg::QueryCommand>(*this)),
+      asok->register_command(make_asok_hook<pg::MarkUnfoundLostCommand>(*this)));
   }).then_unpack([] {
     return seastar::now();
   });
@@ -491,6 +503,20 @@ void OSD::dump_status(Formatter* f) const
   f->dump_unsigned("oldest_map", superblock.oldest_map);
   f->dump_unsigned("newest_map", superblock.newest_map);
   f->dump_unsigned("num_pgs", pg_map.get_pgs().size());
+}
+
+void OSD::dump_pg_state_history(Formatter* f) const
+{
+  f->open_array_section("pgs");
+  for (auto [pgid, pg] : pg_map.get_pgs()) {
+    f->open_object_section("pg");
+    f->dump_stream("pg") << pgid;
+    const auto& peering_state = pg->get_peering_state();
+    f->dump_string("currently", peering_state.get_current_state());
+    peering_state.dump_history(f);
+    f->close_section();
+  }
+  f->close_section();
 }
 
 void OSD::print(std::ostream& out) const
@@ -574,6 +600,8 @@ seastar::future<Ref<PG>> OSD::make_pg(cached_map_t create_map,
 
 seastar::future<Ref<PG>> OSD::load_pg(spg_t pgid)
 {
+  logger().debug("{}: {}", __func__, pgid);
+
   return seastar::do_with(PGMeta(store.get(), pgid), [] (auto& pg_meta) {
     return pg_meta.get_epoch();
   }).then([this](epoch_t e) {
@@ -1276,18 +1304,27 @@ OSD::get_or_create_pg(
   epoch_t epoch,
   std::unique_ptr<PGCreateInfo> info)
 {
-  auto [fut, creating] = pg_map.get_pg(pgid, bool(info));
-  if (!creating && info) {
-    pg_map.set_creating(pgid);
-    (void)handle_pg_create_info(std::move(info));
+  if (info) {
+    auto [fut, creating] = pg_map.wait_for_pg(pgid);
+    if (!creating) {
+      pg_map.set_creating(pgid);
+      (void)handle_pg_create_info(std::move(info));
+    }
+    return std::move(fut);
+  } else {
+    return make_ready_blocking_future<Ref<PG>>(pg_map.get_pg(pgid));
   }
-  return std::move(fut);
 }
 
 blocking_future<Ref<PG>> OSD::wait_for_pg(
   spg_t pgid)
 {
-  return pg_map.get_pg(pgid).first;
+  return pg_map.wait_for_pg(pgid).first;
+}
+
+Ref<PG> OSD::get_pg(spg_t pgid)
+{
+  return pg_map.get_pg(pgid);
 }
 
 seastar::future<> OSD::prepare_to_stop()

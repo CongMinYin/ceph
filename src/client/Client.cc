@@ -84,6 +84,7 @@
 #include "include/lru.h"
 #include "include/compat.h"
 #include "include/stringify.h"
+#include "include/random.h"
 
 #include "Client.h"
 #include "Inode.h"
@@ -128,6 +129,8 @@
 
 #define DEBUG_GETATTR_CAPS (CEPH_CAP_XATTR_SHARED)
 
+using namespace TOPNSPC::common;
+
 namespace bs = boost::system;
 namespace ca = ceph::async;
 
@@ -157,9 +160,11 @@ int Client::CommandHook::call(
     std::scoped_lock l{m_client->client_lock};
     if (command == "mds_requests")
       m_client->dump_mds_requests(f);
-    else if (command == "mds_sessions")
-      m_client->dump_mds_sessions(f);
-    else if (command == "dump_cache")
+    else if (command == "mds_sessions") {
+      bool cap_dump = false;
+      cmd_getval(cmdmap, "cap_dump", cap_dump);
+      m_client->dump_mds_sessions(f, cap_dump);
+    } else if (command == "dump_cache")
       m_client->dump_cache(f);
     else if (command == "kick_stale_sessions")
       m_client->_kick_stale_sessions();
@@ -476,7 +481,7 @@ void Client::dump_status(Formatter *f)
     f->dump_int("mds_epoch", mdsmap->get_epoch());
     f->dump_int("osd_epoch", osd_epoch);
     f->dump_int("osd_epoch_barrier", cap_epoch_barrier);
-    f->dump_bool("blacklisted", blacklisted);
+    f->dump_bool("blocklisted", blocklisted);
   }
 }
 
@@ -486,7 +491,7 @@ void Client::_pre_init()
 
   objecter_finisher.start();
   filer.reset(new Filer(objecter, &objecter_finisher));
-  objecter->enable_blacklist_events();
+  objecter->enable_blocklist_events();
 
   objectcacher->start();
 }
@@ -531,7 +536,8 @@ void Client::_finish_init()
     lderr(cct) << "error registering admin socket command: "
 	       << cpp_strerror(-ret) << dendl;
   }
-  ret = admin_socket->register_command("mds_sessions",
+  ret = admin_socket->register_command("mds_sessions "
+		                       "name=cap_dump,type=CephBool,req=false",
 				       &m_command_hook,
 				       "show mds session state");
   if (ret < 0) {
@@ -709,7 +715,6 @@ void Client::trim_dentry(Dentry *dn)
 		 << dendl;
   if (dn->inode) {
     Inode *diri = dn->dir->parent_inode;
-    diri->dir_release_count++;
     clear_dir_complete_and_ordered(diri, true);
   }
   unlink(dn, false, false);  // drop dir, drop dentry
@@ -1019,13 +1024,11 @@ Dentry *Client::insert_dentry_inode(Dir *dir, const string& dname, LeaseStat *dl
     if (old_dentry) {
       if (old_dentry->dir != dir) {
 	Inode *old_diri = old_dentry->dir->parent_inode;
-	old_diri->dir_ordered_count++;
 	clear_dir_complete_and_ordered(old_diri, false);
       }
       unlink(old_dentry, dir == old_dentry->dir, false);  // drop dentry, keep dir open if its the same dir
     }
     Inode *diri = dir->parent_inode;
-    diri->dir_ordered_count++;
     clear_dir_complete_and_ordered(diri, false);
     dn = link(dir, dname, in, dn);
   }
@@ -1052,6 +1055,8 @@ void Client::update_dentry_lease(Dentry *dn, LeaseStat *dlease, utime_t from, Me
     }
   }
   dn->cap_shared_gen = dn->dir->parent_inode->shared_gen;
+  if (dlease->mask & CEPH_LEASE_PRIMARY_LINK)
+    dn->mark_primary();
 }
 
 
@@ -1073,11 +1078,19 @@ void Client::update_dir_dist(Inode *in, DirStat *dst)
   }
 
   // replicated
-  in->dir_replicated = !dst->dist.empty();  // FIXME that's just one frag!
+  in->dir_replicated = !dst->dist.empty();
+  if (!dst->dist.empty())
+    in->frag_repmap[dst->frag].assign(dst->dist.begin(), dst->dist.end()) ;
+  else
+    in->frag_repmap.erase(dst->frag);
 }
 
 void Client::clear_dir_complete_and_ordered(Inode *diri, bool complete)
 {
+  if (complete)
+    diri->dir_release_count++;
+  else
+    diri->dir_ordered_count++;
   if (diri->flags & I_COMPLETE) {
     if (complete) {
       ldout(cct, 10) << " clearing (I_COMPLETE|I_DIR_ORDERED) on " << *diri << dendl;
@@ -1282,7 +1295,6 @@ Inode* Client::insert_trace(MetaRequest *request, MetaSession *session)
     Dentry *d = request->dentry();
     if (d) {
       Inode *diri = d->dir->parent_inode;
-      diri->dir_release_count++;
       clear_dir_complete_and_ordered(diri, true);
     }
 
@@ -1370,7 +1382,6 @@ Inode* Client::insert_trace(MetaRequest *request, MetaSession *session)
       if (diri->dir && diri->dir->dentries.count(dname)) {
 	dn = diri->dir->dentries[dname];
 	if (dn->inode) {
-	  diri->dir_ordered_count++;
 	  clear_dir_complete_and_ordered(diri, false);
 	  unlink(dn, true, true);  // keep dir, dentry
 	}
@@ -1498,9 +1509,16 @@ mds_rank_t Client::choose_target_mds(MetaRequest *req, Inode** phash_diri)
     ldout(cct, 20) << __func__ << " " << *in << " is_hash=" << is_hash
              << " hash=" << hash << dendl;
   
-    if (is_hash && S_ISDIR(in->mode) && !in->fragmap.empty()) {
+    if (is_hash && S_ISDIR(in->mode) && (!in->fragmap.empty() || !in->frag_repmap.empty())) {
       frag_t fg = in->dirfragtree[hash];
-      if (in->fragmap.count(fg)) {
+      if (!req->auth_is_best()) {
+        auto repmapit = in->frag_repmap.find(fg);
+        if (repmapit != in->frag_repmap.end()) {
+          auto& repmap = repmapit->second;
+          auto r = ceph::util::generate_random_number<uint64_t>(0, repmap.size()-1);
+          mds = repmap.at(r);
+        }
+      } else if (in->fragmap.count(fg)) {
 	mds = in->fragmap[fg];
 	if (phash_diri)
 	  *phash_diri = in;
@@ -1554,7 +1572,7 @@ void Client::connect_mds_targets(mds_rank_t mds)
   }
 }
 
-void Client::dump_mds_sessions(Formatter *f)
+void Client::dump_mds_sessions(Formatter *f, bool cap_dump)
 {
   f->dump_int("id", get_nodeid().v);
   entity_inst_t inst(messenger->get_myname(), messenger->get_myaddr_legacy());
@@ -1564,7 +1582,7 @@ void Client::dump_mds_sessions(Formatter *f)
   f->open_array_section("sessions");
   for (const auto &p : mds_sessions) {
     f->open_object_section("session");
-    p.second.dump(f);
+    p.second.dump(f, cap_dump);
     f->close_section();
   }
   f->close_section();
@@ -1724,8 +1742,8 @@ int Client::make_request(MetaRequest *request,
     if (request->aborted())
       break;
 
-    if (blacklisted) {
-      request->abort(-EBLACKLISTED);
+    if (blocklisted) {
+      request->abort(-EBLOCKLISTED);
       break;
     }
 
@@ -1876,7 +1894,7 @@ int Client::encode_inode_release(Inode *in, MetaRequest *req,
 			 int unless, int force)
 {
   ldout(cct, 20) << __func__ << " enter(in:" << *in << ", req:" << req
-	   << " mds:" << mds << ", drop:" << drop << ", unless:" << unless
+	   << " mds:" << mds << ", drop:" << ccap_string(drop) << ", unless:" << ccap_string(unless)
 	   << ", force:" << force << ")" << dendl;
   int released = 0;
   auto it = in->caps.find(mds);
@@ -2505,58 +2523,58 @@ void Client::_handle_full_flag(int64_t pool)
 
 void Client::handle_osd_map(const MConstRef<MOSDMap>& m)
 {
-  std::set<entity_addr_t> new_blacklists;
-  objecter->consume_blacklist_events(&new_blacklists);
+  std::set<entity_addr_t> new_blocklists;
+  objecter->consume_blocklist_events(&new_blocklists);
 
   const auto myaddrs = messenger->get_myaddrs();
-  bool new_blacklist = false;
+  bool new_blocklist = false;
   bool prenautilus = objecter->with_osdmap(
     [&](const OSDMap& o) {
       return o.require_osd_release < ceph_release_t::nautilus;
     });
-  if (!blacklisted) {
+  if (!blocklisted) {
     for (auto a : myaddrs.v) {
-      // blacklist entries are always TYPE_ANY for nautilus+
+      // blocklist entries are always TYPE_ANY for nautilus+
       a.set_type(entity_addr_t::TYPE_ANY);
-      if (new_blacklists.count(a)) {
-	new_blacklist = true;
+      if (new_blocklists.count(a)) {
+	new_blocklist = true;
 	break;
       }
       if (prenautilus) {
 	// ...except pre-nautilus, they were TYPE_LEGACY
 	a.set_type(entity_addr_t::TYPE_LEGACY);
-	if (new_blacklists.count(a)) {
-	  new_blacklist = true;
+	if (new_blocklists.count(a)) {
+	  new_blocklist = true;
 	  break;
 	}
       }
     }
   }
-  if (new_blacklist) {
+  if (new_blocklist) {
     auto epoch = objecter->with_osdmap([](const OSDMap &o){
         return o.get_epoch();
         });
-    lderr(cct) << "I was blacklisted at osd epoch " << epoch << dendl;
-    blacklisted = true;
+    lderr(cct) << "I was blocklisted at osd epoch " << epoch << dendl;
+    blocklisted = true;
 
-    _abort_mds_sessions(-EBLACKLISTED);
+    _abort_mds_sessions(-EBLOCKLISTED);
 
     // Since we know all our OSD ops will fail, cancel them all preemtively,
     // so that on an unhealthy cluster we can umount promptly even if e.g.
     // some PGs were inaccessible.
-    objecter->op_cancel_writes(-EBLACKLISTED);
+    objecter->op_cancel_writes(-EBLOCKLISTED);
 
   } 
 
-  if (blacklisted) {
-    // Handle case where we were blacklisted but no longer are
-    blacklisted = objecter->with_osdmap([myaddrs](const OSDMap &o){
-        return o.is_blacklisted(myaddrs);});
+  if (blocklisted) {
+    // Handle case where we were blocklisted but no longer are
+    blocklisted = objecter->with_osdmap([myaddrs](const OSDMap &o){
+        return o.is_blocklisted(myaddrs);});
   }
 
-  // Always subscribe to next osdmap for blacklisted client
-  // until this client is not blacklisted.
-  if (blacklisted) {
+  // Always subscribe to next osdmap for blocklisted client
+  // until this client is not blocklisted.
+  if (blocklisted) {
     objecter->maybe_request_map();
   }
 
@@ -2847,7 +2865,7 @@ void Client::send_reconnect(MetaSession *session)
 	       << " wants " << ccap_string(in->caps_wanted())
 	       << dendl;
       filepath path;
-      in->make_long_path(path);
+      in->make_short_path(path);
       ldout(cct, 10) << "    path " << path << dendl;
 
       bufferlist flockbl;
@@ -3064,9 +3082,10 @@ void Client::handle_lease(const MConstRef<MClientLease>& m)
   }
 }
 
-void Client::put_inode(Inode *in, int n)
+void Client::_put_inode(Inode *in, int n)
 {
   ldout(cct, 10) << __func__ << " on " << *in << dendl;
+
   int left = in->_put(n);
   if (left == 0) {
     // release any caps
@@ -3088,6 +3107,31 @@ void Client::put_inode(Inode *in, int n)
 
     delete in;
   }
+}
+
+void Client::delay_put_inodes(bool wakeup)
+{
+  ceph_assert(ceph_mutex_is_locked_by_me(client_lock));
+
+  std::map<Inode*,int> release;
+  {
+    std::scoped_lock dl(delay_i_lock);
+    release.swap(delay_i_release);
+  }
+
+  for (auto &[in, cnt] : release)
+    _put_inode(in, cnt);
+
+  if (wakeup)
+    mount_cond.notify_all();
+}
+
+void Client::put_inode(Inode *in, int n)
+{
+  ldout(cct, 20) << __func__ << " on " << *in << " n = " << n << dendl;
+
+  std::scoped_lock dl(delay_i_lock);
+  delay_i_release[in] += n;
 }
 
 void Client::close_dir(Dir *dir)
@@ -3134,7 +3178,6 @@ Dentry* Client::link(Dir *dir, const string& name, Inode *in, Dentry *dn)
       Dentry *olddn = in->get_first_parent();
       ceph_assert(olddn->dir != dir || olddn->name != name);
       Inode *old_diri = olddn->dir->parent_inode;
-      old_diri->dir_release_count++;
       clear_dir_complete_and_ordered(old_diri, true);
       unlink(olddn, true, true);  // keep dir, dentry
     }
@@ -4004,7 +4047,7 @@ bool Client::_flush(Inode *in, Context *onfinish)
 
 void Client::_flush_range(Inode *in, int64_t offset, uint64_t size)
 {
-  ceph_assert(ceph_mutex_is_locked(client_lock));
+  ceph_assert(ceph_mutex_is_locked_by_me(client_lock));
   if (!in->oset.dirty_or_tx) {
     ldout(cct, 10) << " nothing to flush" << dendl;
     return;
@@ -4024,7 +4067,7 @@ void Client::_flush_range(Inode *in, int64_t offset, uint64_t size)
 void Client::flush_set_callback(ObjectCacher::ObjectSet *oset)
 {
   //  std::scoped_lock l(client_lock);
-  ceph_assert(ceph_mutex_is_locked(client_lock));   // will be called via dispatch() -> objecter -> ...
+  ceph_assert(ceph_mutex_is_locked_by_me(client_lock));   // will be called via dispatch() -> objecter -> ...
   Inode *in = static_cast<Inode *>(oset->parent);
   ceph_assert(in);
   _flushed(in);
@@ -4048,10 +4091,10 @@ void Client::check_cap_issue(Inode *in, unsigned issued)
       !(had & CEPH_CAP_FILE_CACHE))
     in->cache_gen++;
 
-  if ((issued & CEPH_CAP_FILE_SHARED) &&
-      !(had & CEPH_CAP_FILE_SHARED)) {
-    in->shared_gen++;
-
+  if ((issued & CEPH_CAP_FILE_SHARED) !=
+      (had & CEPH_CAP_FILE_SHARED)) {
+    if (issued & CEPH_CAP_FILE_SHARED)
+      in->shared_gen++;
     if (in->is_dir())
       clear_dir_complete_and_ordered(in, true);
   }
@@ -4228,7 +4271,7 @@ void Client::remove_session_caps(MetaSession *s, int err)
     }
     caps &= CEPH_CAP_FILE_CACHE | CEPH_CAP_FILE_BUFFER;
     if (caps && !in->caps_issued_mask(caps, true)) {
-      if (err == -EBLACKLISTED) {
+      if (err == -EBLOCKLISTED) {
 	if (in->oset.dirty_or_tx) {
 	  lderr(cct) << __func__ << " still has dirty data on " << *in << dendl;
 	  in->set_async_err(err);
@@ -6191,8 +6234,8 @@ void Client::_unmount(bool abort)
 
   std::unique_lock lock{client_lock};
 
-  if (abort || blacklisted) {
-    ldout(cct, 2) << "unmounting (" << (abort ? "abort)" : "blacklisted)") << dendl;
+  if (abort || blocklisted) {
+    ldout(cct, 2) << "unmounting (" << (abort ? "abort)" : "blocklisted)") << dendl;
   } else {
     ldout(cct, 2) << "unmounting" << dendl;
   }
@@ -6200,6 +6243,7 @@ void Client::_unmount(bool abort)
   deleg_timeout = 0;
 
   if (abort) {
+    mount_aborted = true;
     // Abort all mds sessions
     _abort_mds_sessions(-ENOTCONN);
 
@@ -6216,13 +6260,6 @@ void Client::_unmount(bool abort)
     }
     return mds_requests.empty();
   });
-
-  {
-    std::scoped_lock l(timer_lock);
-    if (tick_event)
-      timer.cancel_event(tick_event);
-    tick_event = 0;
-  }
 
   cwd.reset();
 
@@ -6263,7 +6300,7 @@ void Client::_unmount(bool abort)
       // prevent inode from getting freed
       anchor.emplace_back(in);
 
-      if (abort || blacklisted) {
+      if (abort || blocklisted) {
         objectcacher->purge_set(&in->oset);
       } else if (!in->caps.empty()) {
 	_release(in);
@@ -6272,7 +6309,7 @@ void Client::_unmount(bool abort)
     }
   }
 
-  if (abort || blacklisted) {
+  if (abort || blocklisted) {
     for (auto p = dirty_list.begin(); !p.end(); ) {
       Inode *in = *p;
       ++p;
@@ -6290,12 +6327,15 @@ void Client::_unmount(bool abort)
   // empty lru cache
   trim_cache();
 
+  delay_put_inodes();
+
   while (lru.lru_get_size() > 0 ||
          !inode_map.empty()) {
     ldout(cct, 2) << "cache still has " << lru.lru_get_size()
             << "+" << inode_map.size() << " items"
 	    << ", waiting (for caps to release?)"
             << dendl;
+
     if (auto r = mount_cond.wait_for(lock, ceph::make_timespan(5));
 	r == std::cv_status::timeout) {
       dump_cache(NULL);
@@ -6308,6 +6348,13 @@ void Client::_unmount(bool abort)
   if (!cct->_conf->client_trace.empty()) {
     ldout(cct, 1) << "closing trace file '" << cct->_conf->client_trace << "'" << dendl;
     traceout.close();
+  }
+
+  {
+    std::scoped_lock l(timer_lock);
+    if (tick_event)
+      timer.cancel_event(tick_event);
+    tick_event = 0;
   }
 
   _close_sessions();
@@ -6384,7 +6431,7 @@ void Client::tick()
     }
   }
 
-  if (mdsmap->get_epoch()) {
+  if (!mount_aborted && mdsmap->get_epoch()) {
     // renew caps?
     utime_t el = now - last_cap_renew;
     if (el > mdsmap->get_session_timeout() / 3.0)
@@ -6398,22 +6445,25 @@ void Client::tick()
   while (!p.end()) {
     Inode *in = *p;
     ++p;
-    if (in->hold_caps_until > now)
+    if (!mount_aborted && in->hold_caps_until > now)
       break;
     delayed_list.pop_front();
-    check_caps(in, CHECK_CAPS_NODELAY);
+    if (!mount_aborted)
+      check_caps(in, CHECK_CAPS_NODELAY);
   }
 
-  collect_and_send_metrics();
+  if (!mount_aborted)
+    collect_and_send_metrics();
 
+  delay_put_inodes(is_unmounting());
   trim_cache(true);
 
-  if (blacklisted && (is_mounted() || is_unmounting()) &&
+  if (blocklisted && (is_mounted() || is_unmounting()) &&
       last_auto_reconnect + 30 * 60 < now &&
       cct->_conf.get_val<bool>("client_reconnect_stale")) {
     messenger->client_reset();
     fd_gen++; // invalidate open files
-    blacklisted = false;
+    blocklisted = false;
     _kick_stale_sessions();
     last_auto_reconnect = now;
   }
@@ -6517,6 +6567,8 @@ int Client::_lookup(Inode *dir, const string& dname, int mask, InodeRef *target,
 {
   int r = 0;
   Dentry *dn = NULL;
+  // can only request shared caps
+  mask &= CEPH_CAP_ANY_SHARED;
 
   if (dname == "..") {
     if (dir->dentries.empty()) {
@@ -8269,7 +8321,7 @@ struct dentry_off_lt {
 int Client::_readdir_cache_cb(dir_result_t *dirp, add_dirent_cb_t cb, void *p,
 			      int caps, bool getref)
 {
-  ceph_assert(ceph_mutex_is_locked(client_lock));
+  ceph_assert(ceph_mutex_is_locked_by_me(client_lock));
   ldout(cct, 10) << __func__ << " " << dirp << " on " << dirp->inode->ino
 	   << " last_name " << dirp->last_name << " offset " << hex << dirp->offset << dec
 	   << dendl;
@@ -8739,10 +8791,12 @@ int Client::open(const char *relpath, int flags, const UserPerm& perms,
   if (!mref_reader.is_state_satisfied())
     return -ENOTCONN;
 
-  ldout(cct, 3) << "open enter(" << relpath << ", " << ceph_flags_sys2wire(flags) << "," << mode << ")" << dendl;
+  int cflags = ceph_flags_sys2wire(flags);
+
+  ldout(cct, 3) << "open enter(" << relpath << ", " << cflags << "," << mode << ")" << dendl;
   tout(cct) << "open" << std::endl;
   tout(cct) << relpath << std::endl;
-  tout(cct) << ceph_flags_sys2wire(flags) << std::endl;
+  tout(cct) << cflags << std::endl;
 
   Fh *fh = NULL;
 
@@ -8759,9 +8813,10 @@ int Client::open(const char *relpath, int flags, const UserPerm& perms,
   bool created = false;
   /* O_CREATE with O_EXCL enforces O_NOFOLLOW. */
   bool followsym = !((flags & O_NOFOLLOW) || ((flags & O_CREAT) && (flags & O_EXCL)));
+  int mask = ceph_caps_for_mode(ceph_flags_to_mode(cflags));
 
   std::scoped_lock lock(client_lock);
-  int r = path_walk(path, &in, perms, followsym, ceph_caps_for_mode(mode));
+  int r = path_walk(path, &in, perms, followsym, mask);
 
   if (r == 0 && (flags & O_CREAT) && (flags & O_EXCL))
     return -EEXIST;
@@ -8814,7 +8869,7 @@ int Client::open(const char *relpath, int flags, const UserPerm& perms,
   
  out:
   tout(cct) << r << std::endl;
-  ldout(cct, 3) << "open exit(" << path << ", " << ceph_flags_sys2wire(flags) << ") = " << r << dendl;
+  ldout(cct, 3) << "open exit(" << path << ", " << cflags << ") = " << r << dendl;
   return r;
 }
 
@@ -9649,16 +9704,6 @@ int Client::_read_sync(Fh *f, uint64_t off, uint64_t len, bufferlist *bl,
   return read;
 }
 
-
-/*
- * we keep count of uncommitted sync writes on the inode, so that
- * fsync can DDRT.
- */
-void Client::_sync_write_commit(Inode *in)
-{
-  put_cap_ref(in, CEPH_CAP_FILE_BUFFER);
-}
-
 int Client::write(int fd, const char *buf, loff_t size, loff_t offset) 
 {
   RWRef_t mref_reader(mount_state, CLIENT_MOUNTING);
@@ -9917,7 +9962,7 @@ int64_t Client::_write(Fh *f, int64_t offset, uint64_t size, const char *buf,
 
     // simple, non-atomic sync write
     C_SaferCond onfinish("Client::_write flock");
-    get_cap_ref(in, CEPH_CAP_FILE_BUFFER);  // released by onsafe callback
+    get_cap_ref(in, CEPH_CAP_FILE_BUFFER);
 
     filer->write_trunc(in->ino, &in->layout, in->snaprealm->get_snap_context(),
 		       offset, size, bl, ceph::real_clock::now(), 0,
@@ -9926,7 +9971,7 @@ int64_t Client::_write(Fh *f, int64_t offset, uint64_t size, const char *buf,
     client_lock.unlock();
     r = onfinish.wait();
     client_lock.lock();
-    _sync_write_commit(in);
+    put_cap_ref(in, CEPH_CAP_FILE_BUFFER);
     if (r < 0)
       goto done;
   }
@@ -11594,11 +11639,11 @@ int Client::fremovexattr(int fd, const char *name, const UserPerm& perms)
 int Client::setxattr(const char *path, const char *name, const void *value,
 		     size_t size, int flags, const UserPerm& perms)
 {
-  _setxattr_maybe_wait_for_osdmap(name, value, size);
-
   RWRef_t mref_reader(mount_state, CLIENT_MOUNTING);
   if (!mref_reader.is_state_satisfied())
     return -ENOTCONN;
+
+  _setxattr_maybe_wait_for_osdmap(name, value, size);
 
   std::scoped_lock lock(client_lock);
 
@@ -11612,11 +11657,11 @@ int Client::setxattr(const char *path, const char *name, const void *value,
 int Client::lsetxattr(const char *path, const char *name, const void *value,
 		      size_t size, int flags, const UserPerm& perms)
 {
-  _setxattr_maybe_wait_for_osdmap(name, value, size);
-
   RWRef_t mref_reader(mount_state, CLIENT_MOUNTING);
   if (!mref_reader.is_state_satisfied())
     return -ENOTCONN;
+
+  _setxattr_maybe_wait_for_osdmap(name, value, size);
 
   std::scoped_lock lock(client_lock);
 
@@ -11630,11 +11675,11 @@ int Client::lsetxattr(const char *path, const char *name, const void *value,
 int Client::fsetxattr(int fd, const char *name, const void *value, size_t size,
 		      int flags, const UserPerm& perms)
 {
-  _setxattr_maybe_wait_for_osdmap(name, value, size);
-
   RWRef_t mref_reader(mount_state, CLIENT_MOUNTING);
   if (!mref_reader.is_state_satisfied())
     return -ENOTCONN;
+
+  _setxattr_maybe_wait_for_osdmap(name, value, size);
 
   std::scoped_lock lock(client_lock);
 
@@ -12163,6 +12208,10 @@ size_t Client::_vxattrcb_dir_rsubdirs(Inode *in, char *val, size_t size)
 {
   return snprintf(val, size, "%llu", (unsigned long long)in->rstat.rsubdirs);
 }
+size_t Client::_vxattrcb_dir_rsnaps(Inode *in, char *val, size_t size)
+{
+  return snprintf(val, size, "%llu", (unsigned long long)in->rstat.rsnaps);
+}
 size_t Client::_vxattrcb_dir_rbytes(Inode *in, char *val, size_t size)
 {
   return snprintf(val, size, "%llu", (unsigned long long)in->rstat.rbytes);
@@ -12248,6 +12297,7 @@ const Client::VXattr Client::_dir_vxattrs[] = {
   XATTR_NAME_CEPH2(dir, rentries, VXATTR_RSTAT),
   XATTR_NAME_CEPH2(dir, rfiles, VXATTR_RSTAT),
   XATTR_NAME_CEPH2(dir, rsubdirs, VXATTR_RSTAT),
+  XATTR_NAME_CEPH2(dir, rsnaps, VXATTR_RSTAT),
   XATTR_NAME_CEPH2(dir, rbytes, VXATTR_RSTAT),
   XATTR_NAME_CEPH2(dir, rctime, VXATTR_RSTAT),
   {
@@ -13919,7 +13969,7 @@ int Client::_fallocate(Fh *fh, int mode, int64_t offset, int64_t length)
       client_lock.unlock();
       onfinish.wait();
       client_lock.lock();
-      _sync_write_commit(in);
+      put_cap_ref(in, CEPH_CAP_FILE_BUFFER);
     }
   } else if (!(mode & FALLOC_FL_KEEP_SIZE)) {
     uint64_t size = offset + length;
@@ -14059,7 +14109,7 @@ int Client::set_deleg_timeout(uint32_t timeout)
   std::scoped_lock lock(client_lock);
 
   /*
-   * The whole point is to prevent blacklisting so we must time out the
+   * The whole point is to prevent blocklisting so we must time out the
    * delegation before the session autoclose timeout kicks in.
    */
   if (timeout >= mdsmap->get_session_autoclose())
@@ -14427,7 +14477,7 @@ void Client::ms_handle_remote_reset(Connection *con)
 
 	case MetaSession::STATE_OPEN:
 	  {
-	    objecter->maybe_request_map(); /* to check if we are blacklisted */
+	    objecter->maybe_request_map(); /* to check if we are blocklisted */
 	    if (cct->_conf.get_val<bool>("client_reconnect_stale")) {
 	      ldout(cct, 1) << "reset from mds we were open; close mds session for reconnect" << dendl;
 	      _closed_mds_session(s);
@@ -14853,8 +14903,8 @@ int Client::start_reclaim(const std::string& uuid, unsigned flags,
   if (flags & CEPH_RECLAIM_RESET)
     return 0;
 
-  // use blacklist to check if target session was killed
-  // (config option mds_session_blacklist_on_evict needs to be true)
+  // use blocklist to check if target session was killed
+  // (config option mds_session_blocklist_on_evict needs to be true)
   ldout(cct, 10) << __func__ << ": waiting for OSD epoch " << reclaim_osd_epoch << dendl;
   bs::error_code ec;
   l.unlock();
@@ -14864,11 +14914,11 @@ int Client::start_reclaim(const std::string& uuid, unsigned flags,
   if (ec)
     return ceph::from_error_code(ec);
 
-  bool blacklisted = objecter->with_osdmap(
+  bool blocklisted = objecter->with_osdmap(
       [this](const OSDMap &osd_map) -> bool {
-	return osd_map.is_blacklisted(reclaim_target_addrs);
+	return osd_map.is_blocklisted(reclaim_target_addrs);
       });
-  if (blacklisted)
+  if (blocklisted)
     return -ENOTRECOVERABLE;
 
   metadata["reclaiming_uuid"] = uuid;

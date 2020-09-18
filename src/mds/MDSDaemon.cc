@@ -335,11 +335,15 @@ void MDSDaemon::set_up_admin_socket()
                                      asok_hook,
                                      "dump snapshots");
   ceph_assert(r == 0);
-  r = admin_socket->register_command("session ls name=filters,type=CephString,n=N,req=false",
+  r = admin_socket->register_command("session ls "
+				     "name=cap_dump,type=CephBool,req=false "
+		                     "name=filters,type=CephString,n=N,req=false ",
 				     asok_hook,
 				     "List client sessions based on a filter");
   ceph_assert(r == 0);
-  r = admin_socket->register_command("client ls name=filters,type=CephString,n=N,req=false",
+  r = admin_socket->register_command("client ls "
+				     "name=cap_dump,type=CephBool,req=false "
+		                     "name=filters,type=CephString,n=N,req=false ",
 				     asok_hook,
 				     "List client sessions based on a filter");
   ceph_assert(r == 0);
@@ -355,7 +359,7 @@ void MDSDaemon::set_up_admin_socket()
 				     asok_hook,
 				     "Evict a client session by id");
   ceph_assert(r == 0);
-  r = admin_socket->register_command("session ls",
+  r = admin_socket->register_command("session ls name=cap_dump,type=CephBool,req=false",
 				     asok_hook,
 				     "Enumerate connected CephFS clients");
   ceph_assert(r == 0);
@@ -743,12 +747,11 @@ void MDSDaemon::handle_mds_map(const cref_t<MMDSMap> &m)
 
     // Did I previously not hold a rank?  Initialize!
     if (mds_rank == NULL) {
-      mds_rank = new MDSRankDispatcher(
-	whoami, mds_lock, clog,
-	timer, beacon, mdsmap, messenger, monc, &mgrc,
-	new LambdaContext([this](int r){respawn();}),
-	new LambdaContext([this](int r){suicide();}),
-	ioctx);
+      mds_rank = new MDSRankDispatcher(whoami, m->map_fs_name, mds_lock, clog,
+          timer, beacon, mdsmap, messenger, monc, &mgrc,
+          new LambdaContext([this](int r){respawn();}),
+          new LambdaContext([this](int r){suicide();}),
+	  ioctx);
       dout(10) <<  __func__ << ": initializing MDS rank "
                << mds_rank->get_nodeid() << dendl;
       mds_rank->init();

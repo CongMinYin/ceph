@@ -8,6 +8,7 @@ from typing import Optional, Dict, Any, List, Union, Callable, Iterator
 import yaml
 
 from ceph.deployment.hostspec import HostSpec
+from ceph.deployment.utils import unwrap_ipv6
 
 
 class ServiceSpecValidationError(Exception):
@@ -58,14 +59,12 @@ class HostPlacementSpec(namedtuple('HostPlacementSpec', ['hostname', 'network', 
     @classmethod
     @handle_type_error
     def from_json(cls, data):
+        if isinstance(data, str):
+            return cls.parse(data)
         return cls(**data)
 
-    def to_json(self):
-        return {
-            'hostname': self.hostname,
-            'network': self.network,
-            'name': self.name
-        }
+    def to_json(self) -> str:
+        return str(self)
 
     @classmethod
     def parse(cls, host, require_network=True):
@@ -121,13 +120,16 @@ class HostPlacementSpec(namedtuple('HostPlacementSpec', ['hostname', 'network', 
         for network in networks:
             # only if we have versioned network configs
             if network.startswith('v') or network.startswith('[v'):
-                network = network.split(':')[1]
+                # if this is ipv6 we can't just simply split on ':' so do
+                # a split once and rsplit once to leave us with just ipv6 addr
+                network = network.split(':', 1)[1]
+                network = network.rsplit(':', 1)[0]
             try:
                 # if subnets are defined, also verify the validity
                 if '/' in network:
                     ip_network(network)
                 else:
-                    ip_address(network)
+                    ip_address(unwrap_ipv6(network))
             except ValueError as e:
                 # logging?
                 raise e
@@ -209,16 +211,21 @@ class PlacementSpec(object):
         return len(self.filter_matching_hostspecs(hostspecs))
 
     def pretty_str(self):
+        """
+        >>> #doctest: +SKIP
+        ... ps = PlacementSpec(...)  # For all placement specs:
+        ... PlacementSpec.from_string(ps.pretty_str()) == ps
+        """
         kv = []
+        if self.hosts:
+            kv.append(';'.join([str(h) for h in self.hosts]))
         if self.count:
             kv.append('count:%d' % self.count)
         if self.label:
             kv.append('label:%s' % self.label)
-        if self.hosts:
-            kv.append('%s' % ','.join([str(h) for h in self.hosts]))
         if self.host_pattern:
             kv.append(self.host_pattern)
-        return ' '.join(kv)
+        return ';'.join(kv)
 
     def __repr__(self):
         kv = []
@@ -240,9 +247,7 @@ class PlacementSpec(object):
         if hosts:
             c['hosts'] = []
             for host in hosts:
-                c['hosts'].append(HostPlacementSpec.parse(host) if
-                                  isinstance(host, str) else
-                                  HostPlacementSpec.from_json(host))
+                c['hosts'].append(HostPlacementSpec.from_json(host))
         _cls = cls(**c)
         _cls.validate()
         return _cls
@@ -584,8 +589,6 @@ class NFSServiceSpec(ServiceSpec):
         #: RADOS namespace where NFS client recovery data is stored in the pool.
         self.namespace = namespace
 
-        self.preview_only = preview_only
-
     def validate(self):
         super(NFSServiceSpec, self).validate()
 
@@ -655,7 +658,6 @@ class RGWSpec(ServiceSpec):
         self.rgw_frontend_ssl_certificate = rgw_frontend_ssl_certificate
         self.rgw_frontend_ssl_key = rgw_frontend_ssl_key
         self.ssl = ssl
-        self.preview_only = preview_only
 
     def get_port(self):
         if self.rgw_frontend_port:
@@ -719,7 +721,6 @@ class IscsiServiceSpec(ServiceSpec):
         self.api_secure = api_secure
         self.ssl_cert = ssl_cert
         self.ssl_key = ssl_key
-        self.preview_only = preview_only
 
         if not self.api_secure and self.ssl_cert and self.ssl_key:
             self.api_secure = True

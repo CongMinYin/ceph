@@ -15,6 +15,7 @@
 #include "rgw_op.h"
 #include "rgw_rest.h"
 #include "rgw_rest_user_policy.h"
+#include "rgw_sal_rados.h"
 #include "services/svc_zone.h"
 
 #define dout_subsys ceph_subsys_rgw
@@ -132,13 +133,11 @@ void RGWPutUserPolicy::execute()
     return;
   }
 
-  if (!store->svc()->zone->is_meta_master()) {
-    ceph::bufferlist in_data;
-    op_ret = forward_request_to_master(s, nullptr, store, in_data, nullptr);
-    if (op_ret < 0) {
-      ldpp_dout(this, 0) << "ERROR: forward_request_to_master returned ret=" << op_ret << dendl;
-      return;
-    }
+  ceph::bufferlist in_data;
+  op_ret = store->forward_request_to_master(s->user.get(), nullptr, in_data, nullptr, s->info);
+  if (op_ret < 0) {
+    ldpp_dout(this, 0) << "ERROR: forward_request_to_master returned ret=" << op_ret << dendl;
+    return;
   }
 
   try {
@@ -338,18 +337,16 @@ void RGWDeleteUserPolicy::execute()
     return;
   }
 
-  if (!store->svc()->zone->is_meta_master()) {
-    ceph::bufferlist in_data;
-    op_ret = forward_request_to_master(s, nullptr, store, in_data, nullptr);
-    if (op_ret < 0) {
-      // a policy might've been uploaded to this site when there was no sync
-      // req. in earlier releases, proceed deletion
-      if (op_ret != -ENOENT) {
-        ldpp_dout(this, 5) << "forward_request_to_master returned ret=" << op_ret << dendl;
-        return;
-      }
-      ldpp_dout(this, 0) << "ERROR: forward_request_to_master returned ret=" << op_ret << dendl;
+  ceph::bufferlist in_data;
+  op_ret = store->forward_request_to_master(s->user.get(), nullptr, in_data, nullptr, s->info);
+  if (op_ret < 0) {
+    // a policy might've been uploaded to this site when there was no sync
+    // req. in earlier releases, proceed deletion
+    if (op_ret != -ENOENT) {
+      ldpp_dout(this, 5) << "forward_request_to_master returned ret=" << op_ret << dendl;
+      return;
     }
+    ldpp_dout(this, 0) << "ERROR: forward_request_to_master returned ret=" << op_ret << dendl;
   }
 
   map<string, string> policies;

@@ -66,7 +66,7 @@ class MDSMonitor : public PaxosService, public PaxosFSMap, protected CommandHand
   int print_nodes(ceph::Formatter *f);
 
   /**
-   * Return true if a blacklist was done (i.e. OSD propose needed)
+   * Return true if a blocklist was done (i.e. OSD propose needed)
    */
   bool fail_mds_gid(FSMap &fsmap, mds_gid_t gid);
 
@@ -89,8 +89,7 @@ class MDSMonitor : public PaxosService, public PaxosFSMap, protected CommandHand
   bool prepare_offload_targets(MonOpRequestRef op);
 
   int fail_mds(FSMap &fsmap, std::ostream &ss,
-      const std::string &arg,
-      mds_info_t *failed_info);
+      const std::string &arg, mds_info_t *failed_info);
 
   bool preprocess_command(MonOpRequestRef op);
   bool prepare_command(MonOpRequestRef op);

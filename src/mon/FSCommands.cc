@@ -64,7 +64,7 @@ class FlagSetHandler : public FileSystemCommandHandler
 
   int handle(
       Monitor *mon,
-      FSMap &fsmap,
+      FSMap& fsmap,
       MonOpRequestRef op,
       const cmdmap_t& cmdmap,
       std::stringstream &ss) override
@@ -126,10 +126,6 @@ class FailHandler : public FileSystemCommandHandler
     }
 
     auto fs = fsmap.get_filesystem(fs_name);
-    if (fs == nullptr) {
-      ss << "Not found: '" << fs_name << "'";
-      return -ENOENT;
-    }
 
     auto f = [](auto fs) {
       fs->mds_map.set_flag(CEPH_MDSMAP_NOT_JOINABLE);
@@ -169,7 +165,7 @@ class FsNewHandler : public FileSystemCommandHandler
 
   int handle(
       Monitor *mon,
-      FSMap &fsmap,
+      FSMap& fsmap,
       MonOpRequestRef op,
       const cmdmap_t& cmdmap,
       std::stringstream &ss) override
@@ -323,7 +319,7 @@ public:
 
   int handle(
       Monitor *mon,
-      FSMap &fsmap,
+      FSMap& fsmap,
       MonOpRequestRef op,
       const cmdmap_t& cmdmap,
       std::stringstream &ss) override
@@ -335,11 +331,6 @@ public:
     }
 
     auto fs = fsmap.get_filesystem(fs_name);
-    if (fs == nullptr) {
-      ss << "Not found: '" << fs_name << "'";
-      return -ENOENT;
-    }
-
     string var;
     if (!cmd_getval(cmdmap, "var", var) || var.empty()) {
       ss << "Invalid variable";
@@ -364,6 +355,7 @@ public:
         ss << "You must specify at least one MDS";
         return -EINVAL;
       }
+
       if (n > 1 && n > fs->mds_map.get_max_mds()) {
 	if (fs->mds_map.was_snaps_ever_allowed() &&
 	    !fs->mds_map.allows_multimds_snaps()) {
@@ -738,7 +730,7 @@ class AddDataPoolHandler : public FileSystemCommandHandler
 
   int handle(
       Monitor *mon,
-      FSMap &fsmap,
+      FSMap& fsmap,
       MonOpRequestRef op,
       const cmdmap_t& cmdmap,
       std::stringstream &ss) override
@@ -753,12 +745,6 @@ class AddDataPoolHandler : public FileSystemCommandHandler
         || fs_name.empty()) {
       ss << "Missing filesystem name";
       return -EINVAL;
-    }
-
-    auto fs = fsmap.get_filesystem(fs_name);
-    if (fs == nullptr) {
-      ss << "Not found: '" << fs_name << "'";
-      return -ENOENT;
     }
 
     int64_t poolid = mon->osdmon()->osdmap.lookup_pg_pool_name(poolname);
@@ -776,6 +762,7 @@ class AddDataPoolHandler : public FileSystemCommandHandler
       return r;
     }
 
+    auto fs = fsmap.get_filesystem(fs_name);
     // no-op when the data_pool already on fs
     if (fs->mds_map.is_data_pool(poolid)) {
       ss << "data pool " << poolid << " is already on fs " << fs_name;
@@ -817,7 +804,7 @@ class SetDefaultHandler : public FileSystemCommandHandler
 
   int handle(
       Monitor *mon,
-      FSMap &fsmap,
+      FSMap& fsmap,
       MonOpRequestRef op,
       const cmdmap_t& cmdmap,
       std::stringstream &ss) override
@@ -844,12 +831,12 @@ class RemoveFilesystemHandler : public FileSystemCommandHandler
 
   int handle(
       Monitor *mon,
-      FSMap &fsmap,
+      FSMap& fsmap,
       MonOpRequestRef op,
       const cmdmap_t& cmdmap,
       std::stringstream &ss) override
   {
-    /* We may need to blacklist ranks. */
+    /* We may need to blocklist ranks. */
     if (!mon->osdmon()->is_writeable()) {
       // not allowed to write yet, so retry when we can
       mon->osdmon()->wait_for_writeable(op, new PaxosService::C_RetryMessage(mon->mdsmon(), op));
@@ -900,7 +887,7 @@ class RemoveFilesystemHandler : public FileSystemCommandHandler
       mon->mdsmon()->fail_mds_gid(fsmap, gid);
     }
     if (!to_fail.empty()) {
-      mon->osdmon()->propose_pending(); /* maybe new blacklists */
+      mon->osdmon()->propose_pending(); /* maybe new blocklists */
     }
 
     fsmap.erase_filesystem(fs->fscid);
@@ -918,7 +905,7 @@ class ResetFilesystemHandler : public FileSystemCommandHandler
 
   int handle(
       Monitor *mon,
-      FSMap &fsmap,
+      FSMap& fsmap,
       MonOpRequestRef op,
       const cmdmap_t& cmdmap,
       std::stringstream &ss) override
@@ -963,7 +950,7 @@ class RemoveDataPoolHandler : public FileSystemCommandHandler
 
   int handle(
       Monitor *mon,
-      FSMap &fsmap,
+      FSMap& fsmap,
       MonOpRequestRef op,
       const cmdmap_t& cmdmap,
       std::stringstream &ss) override
@@ -976,12 +963,6 @@ class RemoveDataPoolHandler : public FileSystemCommandHandler
         || fs_name.empty()) {
       ss << "Missing filesystem name";
       return -EINVAL;
-    }
-
-    auto fs = fsmap.get_filesystem(fs_name);
-    if (fs == nullptr) {
-      ss << "Not found: '" << fs_name << "'";
-      return -ENOENT;
     }
 
     int64_t poolid = mon->osdmon()->osdmap.lookup_pg_pool_name(poolname);
@@ -999,11 +980,11 @@ class RemoveDataPoolHandler : public FileSystemCommandHandler
 
     ceph_assert(poolid >= 0);  // Checked by parsing code above
 
+    auto fs = fsmap.get_filesystem(fs_name);
     if (fs->mds_map.get_first_data_pool() == poolid) {
       ss << "cannot remove default data pool";
       return -EINVAL;
     }
-
 
     int r = 0;
     fsmap.modify_filesystem(fs->fscid,
@@ -1040,11 +1021,11 @@ class AliasHandler : public T
     alias_prefix = new_prefix;
   }
 
-  std::string const &get_prefix() override {return alias_prefix;}
+  std::string const &get_prefix() const override {return alias_prefix;}
 
   int handle(
       Monitor *mon,
-      FSMap &fsmap,
+      FSMap& fsmap,
       MonOpRequestRef op,
       const cmdmap_t& cmdmap,
       std::stringstream &ss) override
@@ -1053,6 +1034,208 @@ class AliasHandler : public T
   }
 };
 
+class MirrorHandlerEnable : public FileSystemCommandHandler
+{
+public:
+  MirrorHandlerEnable()
+    : FileSystemCommandHandler("fs mirror enable")
+  {}
+
+  int handle(Monitor *mon,
+             FSMap &fsmap, MonOpRequestRef op,
+             const cmdmap_t& cmdmap, std::stringstream &ss) override {
+    std::string fs_name;
+    if (!cmd_getval(cmdmap, "fs_name", fs_name) || fs_name.empty()) {
+      ss << "Missing filesystem name";
+      return -EINVAL;
+    }
+
+    auto fs = fsmap.get_filesystem(fs_name);
+    if (fs == nullptr) {
+      ss << "Filesystem '" << fs_name << "' not found";
+      return -ENOENT;
+    }
+
+    if (fs->mirror_info.is_mirrored()) {
+      return 0;
+    }
+
+    auto f = [](auto &&fs) {
+               fs->mirror_info.enable_mirroring();
+    };
+    fsmap.modify_filesystem(fs->fscid, std::move(f));
+
+    return 0;
+  }
+};
+
+class MirrorHandlerDisable : public FileSystemCommandHandler
+{
+public:
+  MirrorHandlerDisable()
+    : FileSystemCommandHandler("fs mirror disable")
+  {}
+
+  int handle(Monitor *mon,
+             FSMap &fsmap, MonOpRequestRef op,
+             const cmdmap_t& cmdmap, std::stringstream &ss) override {
+    std::string fs_name;
+    if (!cmd_getval(cmdmap, "fs_name", fs_name) || fs_name.empty()) {
+      ss << "Missing filesystem name";
+      return -EINVAL;
+    }
+
+    auto fs = fsmap.get_filesystem(fs_name);
+    if (fs == nullptr) {
+      ss << "Filesystem '" << fs_name << "' not found";
+      return -ENOENT;
+    }
+
+    if (!fs->mirror_info.is_mirrored()) {
+      return 0;
+    }
+
+    auto f = [](auto &&fs) {
+      fs->mirror_info.disable_mirroring();
+    };
+    fsmap.modify_filesystem(fs->fscid, std::move(f));
+
+    return 0;
+  }
+};
+
+class MirrorHandlerAddPeer : public FileSystemCommandHandler
+{
+public:
+  MirrorHandlerAddPeer()
+    : FileSystemCommandHandler("fs mirror peer_add")
+  {}
+
+  boost::optional<std::pair<string, string>>
+  extract_remote_cluster_conf(const std::string &spec) {
+    auto pos = spec.find("@");
+    if (pos == std::string_view::npos) {
+      return boost::optional<std::pair<string, string>>();
+    }
+
+    auto client = spec.substr(0, pos);
+    auto cluster = spec.substr(pos+1);
+
+    return std::make_pair(client, cluster);
+  }
+
+  bool peer_add(FSMap &fsmap, Filesystem::const_ref &&fs,
+                const cmdmap_t &cmdmap, std::stringstream &ss) {
+    string remote_spec;
+    string remote_fs_name;
+    cmd_getval(cmdmap, "remote_cluster_spec", remote_spec);
+    cmd_getval(cmdmap, "remote_fs_name", remote_fs_name);
+
+    // verify (and extract) remote cluster specification
+    auto remote_conf = extract_remote_cluster_conf(remote_spec);
+    if (!remote_conf) {
+      ss << "invalid remote cluster spec -- should be <client>@<cluster>";
+      return false;
+    }
+
+    if (fs->mirror_info.has_peer((*remote_conf).first,
+                                 (*remote_conf).second, remote_fs_name)) {
+      ss << "peer already exists";
+      return true;
+    }
+
+    uuid_d uuid_gen;
+    uuid_gen.generate_random();
+
+    auto f = [uuid_gen, remote_conf, remote_fs_name](auto &&fs) {
+               fs->mirror_info.peer_add(stringify(uuid_gen), (*remote_conf).first,
+                                        (*remote_conf).second, remote_fs_name);
+             };
+    fsmap.modify_filesystem(fs->fscid, std::move(f));
+    return true;
+  }
+
+  int handle(Monitor *mon,
+             FSMap &fsmap, MonOpRequestRef op,
+             const cmdmap_t& cmdmap, std::stringstream &ss) override {
+    std::string fs_name;
+    if (!cmd_getval(cmdmap, "fs_name", fs_name) || fs_name.empty()) {
+      ss << "Missing filesystem name";
+      return -EINVAL;
+    }
+
+    auto fs = fsmap.get_filesystem(fs_name);
+    if (fs == nullptr) {
+      ss << "Filesystem '" << fs_name << "' not found";
+      return -ENOENT;
+    }
+
+    if (!fs->mirror_info.is_mirrored()) {
+      ss << "Mirroring not enabled for filesystem '" << fs_name << "'";
+      return -EINVAL;
+    }
+
+    auto res = peer_add(fsmap, std::move(fs), cmdmap, ss);
+    if (!res) {
+      return -EINVAL;
+    }
+
+    return 0;
+  }
+};
+
+class MirrorHandlerRemovePeer : public FileSystemCommandHandler
+{
+public:
+  MirrorHandlerRemovePeer()
+    : FileSystemCommandHandler("fs mirror peer_remove")
+  {}
+
+  bool peer_remove(FSMap &fsmap, Filesystem::const_ref &&fs,
+                   const cmdmap_t &cmdmap, std::stringstream &ss) {
+    string peer_uuid;
+    cmd_getval(cmdmap, "uuid", peer_uuid);
+
+    if (!fs->mirror_info.has_peer(peer_uuid)) {
+      ss << "cannot find peer with uuid: " << peer_uuid;
+      return true;
+    }
+
+    auto f = [peer_uuid](auto &&fs) {
+               fs->mirror_info.peer_remove(peer_uuid);
+             };
+    fsmap.modify_filesystem(fs->fscid, std::move(f));
+    return true;
+  }
+
+  int handle(Monitor *mon,
+             FSMap &fsmap, MonOpRequestRef op,
+             const cmdmap_t& cmdmap, std::stringstream &ss) override {
+    std::string fs_name;
+    if (!cmd_getval(cmdmap, "fs_name", fs_name) || fs_name.empty()) {
+      ss << "Missing filesystem name";
+      return -EINVAL;
+    }
+
+    auto fs = fsmap.get_filesystem(fs_name);
+    if (fs == nullptr) {
+      ss << "Filesystem '" << fs_name << "' not found";
+      return -ENOENT;
+    }
+
+    if (!fs->mirror_info.is_mirrored()) {
+      ss << "Mirroring not enabled for filesystem '" << fs_name << "'";
+      return -EINVAL;
+    }
+
+    auto res = peer_remove(fsmap, std::move(fs), cmdmap, ss);
+    if (!res) {
+      return -EINVAL;
+    }
+
+    return 0;
+  }
+};
 
 std::list<std::shared_ptr<FileSystemCommandHandler> >
 FileSystemCommandHandler::load(Paxos *paxos)
@@ -1072,6 +1255,10 @@ FileSystemCommandHandler::load(Paxos *paxos)
   handlers.push_back(std::make_shared<SetDefaultHandler>());
   handlers.push_back(std::make_shared<AliasHandler<SetDefaultHandler> >(
         "fs set_default"));
+  handlers.push_back(std::make_shared<MirrorHandlerEnable>());
+  handlers.push_back(std::make_shared<MirrorHandlerDisable>());
+  handlers.push_back(std::make_shared<MirrorHandlerAddPeer>());
+  handlers.push_back(std::make_shared<MirrorHandlerRemovePeer>());
 
   return handlers;
 }
@@ -1149,3 +1336,27 @@ int FileSystemCommandHandler::_check_pool(
   return 0;
 }
 
+int FileSystemCommandHandler::is_op_allowed(
+    const MonOpRequestRef& op, const FSMap& fsmap, const cmdmap_t& cmdmap,
+    std::stringstream &ss) const
+{
+    string fs_name;
+    cmd_getval(cmdmap, "fs_name", fs_name);
+
+    // so that fsmap can filtered and the original copy is untouched.
+    FSMap fsmap_copy = fsmap;
+    fsmap_copy.filter(op->get_session()->get_allowed_fs_names());
+
+    auto fs = fsmap_copy.get_filesystem(fs_name);
+    if (fs == nullptr) {
+      ss << "Filesystem not found: '" << fs_name << "'";
+      return -ENOENT;
+    }
+
+    if (!op->get_session()->fs_name_capable(fs_name, MON_CAP_W)) {
+      ss << "Permission denied: '" << fs_name << "'";
+      return -EPERM;
+    }
+
+  return 1;
+}

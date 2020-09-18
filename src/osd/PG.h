@@ -15,6 +15,11 @@
 #ifndef CEPH_PG_H
 #define CEPH_PG_H
 
+#define BOOST_MPL_CFG_NO_PREPROCESSED_HEADERS
+#if !defined(BOOST_MPL_LIMIT_LIST_SIZE)
+#   define BOOST_MPL_LIMIT_LIST_SIZE 30
+#endif
+
 #include <boost/scoped_ptr.hpp>
 #include <boost/container/flat_set.hpp>
 #include "include/mempool.h"
@@ -204,11 +209,6 @@ public:
     const char *state_name, utime_t enter_time,
     uint64_t events, utime_t event_dur) override;
 
-  void lock_suspend_timeout(ThreadPool::TPHandle &handle) {
-    handle.suspend_tp_timeout();
-    lock();
-    handle.reset_tp_timeout();
-  }
   void lock(bool no_lockdep = false) const;
   void unlock() const;
   bool is_locked() const;
@@ -628,7 +628,6 @@ private:
 protected:
   OSDriver osdriver;
   SnapMapper snap_mapper;
-  bool eio_errors_to_process = false;
 
   virtual PGBackend *get_pgbackend() = 0;
   virtual const PGBackend* get_pgbackend() const = 0;
@@ -1196,6 +1195,7 @@ public:
 
     void create_results(const hobject_t& obj);
     void cleanup_store(ObjectStore::Transaction *t);
+    void dump(ceph::Formatter *f);
   } scrubber;
 
 protected:

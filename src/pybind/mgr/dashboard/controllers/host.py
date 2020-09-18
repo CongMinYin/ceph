@@ -10,14 +10,31 @@ import cherrypy
 from mgr_util import merge_dicts
 from orchestrator import HostSpec
 from . import ApiController, RESTController, Task, Endpoint, ReadPermission, \
-    UiApiController, BaseController
+    UiApiController, BaseController, allow_empty_body, ControllerDoc, EndpointDoc
 from .orchestrator import raise_if_no_orchestrator
 from .. import mgr
 from ..exceptions import DashboardException
 from ..security import Scope
-from ..services.orchestrator import OrchClient
+from ..services.orchestrator import OrchClient, OrchFeature
 from ..services.ceph_service import CephService
 from ..services.exception import handle_orchestrator_error
+
+LIST_HOST_SCHEMA = {
+    "hostname": (str, "Hostname"),
+    "services": ([{
+        "type": (str, "type of service"),
+        "id": (str, "Service Id"),
+    }], "Services related to the host"),
+    "ceph_version": (str, "Ceph version"),
+    "addr": (str, "Host address"),
+    "labels": ([str], "Labels related to the host"),
+    "service_type": (str, ""),
+    "sources": ({
+        "ceph": (bool, ""),
+        "orchestrator": (bool, "")
+    }, "Host Sources"),
+    "status": (str, "")
+}
 
 
 def host_task(name, metadata, wait_for=10.0):
@@ -105,7 +122,13 @@ def get_host(hostname: str) -> Dict:
 
 
 @ApiController('/host', Scope.HOSTS)
+@ControllerDoc("Get Host Details", "Host")
 class Host(RESTController):
+    @EndpointDoc("List Host Specifications",
+                 parameters={
+                     'sources': (str, 'Host Sources'),
+                 },
+                 responses={200: LIST_HOST_SCHEMA})
     def list(self, sources=None):
         if sources is None:
             return get_hosts()
@@ -114,17 +137,19 @@ class Host(RESTController):
         from_orchestrator = 'orchestrator' in _sources
         return get_hosts(from_ceph, from_orchestrator)
 
-    @raise_if_no_orchestrator
+    @raise_if_no_orchestrator([OrchFeature.HOST_LIST, OrchFeature.HOST_CREATE])
     @handle_orchestrator_error('host')
     @host_task('create', {'hostname': '{hostname}'})
     def create(self, hostname):  # pragma: no cover - requires realtime env
         orch_client = OrchClient.instance()
         self._check_orchestrator_host_op(orch_client, hostname, True)
         orch_client.hosts.add(hostname)
+    create._cp_config = {'tools.json_in.force': False}  # pylint: disable=W0212
 
-    @raise_if_no_orchestrator
+    @raise_if_no_orchestrator([OrchFeature.HOST_LIST, OrchFeature.HOST_DELETE])
     @handle_orchestrator_error('host')
     @host_task('delete', {'hostname': '{hostname}'})
+    @allow_empty_body
     def delete(self, hostname):  # pragma: no cover - requires realtime env
         orch_client = OrchClient.instance()
         self._check_orchestrator_host_op(orch_client, hostname, False)
@@ -161,7 +186,7 @@ class Host(RESTController):
         return CephService.get_smart_data_by_host(hostname)
 
     @RESTController.Resource('GET')
-    @raise_if_no_orchestrator
+    @raise_if_no_orchestrator([OrchFeature.DAEMON_LIST])
     def daemons(self, hostname: str) -> List[dict]:
         orch = OrchClient.instance()
         daemons = orch.services.list_daemons(None, hostname)
@@ -175,7 +200,7 @@ class Host(RESTController):
         """
         return get_host(hostname)
 
-    @raise_if_no_orchestrator
+    @raise_if_no_orchestrator([OrchFeature.HOST_LABEL_ADD, OrchFeature.HOST_LABEL_REMOVE])
     @handle_orchestrator_error('host')
     def set(self, hostname: str, labels: List[str]):
         """

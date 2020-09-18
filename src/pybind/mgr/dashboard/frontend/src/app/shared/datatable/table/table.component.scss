@@ -47,16 +47,6 @@
     float: left;
   }
 
-  ::ng-deep .table-filters {
-    border-left: 1px solid bd.$datatable-divider-color;
-    float: right;
-    padding-left: 8px;
-  }
-
-  ::ng-deep .table-filters label {
-    margin-right: 4px;
-  }
-
   .form-group {
     padding-left: 8px;
   }
@@ -83,10 +73,14 @@
   .filter-chips {
     float: right;
     padding: 0 8px;
+
+    .badge-remove {
+      color: bd.$white;
+    }
   }
 }
 
-::ng-deep .cd-datatable {
+::ng-deep cd-table .cd-datatable {
   border: 1px solid bd.$gray-400;
   margin-bottom: 0;
   max-width: none !important;
@@ -252,12 +246,12 @@
   }
 
   .datatable-footer {
-    display: unset !important;
-
     .selected-count,
     .page-count {
       font-style: italic;
-      padding-left: 5px;
+      min-height: 2rem;
+      padding-left: 0.3rem;
+      padding-top: 0.3rem;
     }
   }
 

@@ -209,8 +209,7 @@ int radosgw_Main(int argc, const char **argv)
   flags |= CINIT_FLAG_DEFER_DROP_PRIVILEGES;
 
   auto cct = global_init(&defaults, args, CEPH_ENTITY_TYPE_CLIENT,
-			 CODE_ENVIRONMENT_DAEMON,
-			 flags, "rgw_data");
+			 CODE_ENVIRONMENT_DAEMON, flags);
 
   // First, let's determine which frontends are configured.
   list<string> frontends;
@@ -603,8 +602,8 @@ int radosgw_Main(int argc, const char **argv)
   // add a watcher to respond to realm configuration changes
   RGWPeriodPusher pusher(store);
   RGWFrontendPauser pauser(fes, implicit_tenant_context, &pusher);
-  std::optional<RGWRealmReloader> reloader(std::in_place, store,
-                                           service_map_meta, &pauser);
+  auto reloader = std::make_unique<RGWRealmReloader>(store,
+						     service_map_meta, &pauser);
 
   RGWRealmWatcher realm_watcher(g_ceph_context, store->svc()->zone->get_realm());
   realm_watcher.add_watcher(RGWRealmNotify::Reload, *reloader);

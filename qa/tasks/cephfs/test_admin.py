@@ -1,11 +1,13 @@
 import json
+from io import StringIO
+from os.path import join as os_path_join
 
 from teuthology.orchestra.run import CommandFailedError
 
 from tasks.cephfs.cephfs_test_case import CephFSTestCase
-from tasks.cephfs.fuse_mount import FuseMount
-
 from tasks.cephfs.filesystem import FileLayout
+from tasks.cephfs.fuse_mount import FuseMount
+from tasks.cephfs.caps_helper import CapsHelper
 
 
 class TestAdminCommands(CephFSTestCase):
@@ -15,6 +17,29 @@ class TestAdminCommands(CephFSTestCase):
 
     CLIENTS_REQUIRED = 1
     MDSS_REQUIRED = 1
+
+    def test_fsnames_can_only_by_goodchars(self):
+        n = 'test_fsnames_can_only_by_goodchars'
+        metapoolname, datapoolname = n+'-testmetapool', n+'-testdatapool'
+        badname = n+'badname@#'
+
+        self.fs.mon_manager.raw_cluster_cmd('osd', 'pool', 'create',
+                                            n+metapoolname)
+        self.fs.mon_manager.raw_cluster_cmd('osd', 'pool', 'create',
+                                            n+datapoolname)
+
+        # test that fsname not with "goodchars" fails
+        args = ['fs', 'new', badname, metapoolname, datapoolname]
+        proc = self.fs.mon_manager.run_cluster_cmd(args=args,stderr=StringIO(),
+                                                   check_status=False)
+        self.assertIn('invalid chars', proc.stderr.getvalue().lower())
+
+        self.fs.mon_manager.raw_cluster_cmd('osd', 'pool', 'rm', metapoolname,
+                                            metapoolname,
+                                            '--yes-i-really-really-mean-it-not-faking')
+        self.fs.mon_manager.raw_cluster_cmd('osd', 'pool', 'rm', datapoolname,
+                                            datapoolname,
+                                            '--yes-i-really-really-mean-it-not-faking')
 
     def test_fs_status(self):
         """
@@ -96,7 +121,7 @@ class TestAdminCommands(CephFSTestCase):
         That a new file system warns/fails with an EC default data pool.
         """
 
-        self.fs.delete_all_filesystems()
+        self.mds_cluster.delete_all_filesystems()
         n = "test_new_default_ec"
         self._setup_ec_pools(n)
         try:
@@ -114,7 +139,7 @@ class TestAdminCommands(CephFSTestCase):
         That a new file system succeeds with an EC default data pool with --force.
         """
 
-        self.fs.delete_all_filesystems()
+        self.mds_cluster.delete_all_filesystems()
         n = "test_new_default_ec_force"
         self._setup_ec_pools(n)
         self.fs.mon_manager.raw_cluster_cmd('fs', 'new', n, n+"-meta", n+"-data", "--force")
@@ -124,7 +149,7 @@ class TestAdminCommands(CephFSTestCase):
         That a new file system fails with an EC default data pool without overwrite.
         """
 
-        self.fs.delete_all_filesystems()
+        self.mds_cluster.delete_all_filesystems()
         n = "test_new_default_ec_no_overwrite"
         self._setup_ec_pools(n, overwrites=False)
         try:
@@ -151,7 +176,7 @@ class TestAdminCommands(CephFSTestCase):
         """
         That the application metadata set on the pools of a newly created filesystem are as expected.
         """
-        self.fs.delete_all_filesystems()
+        self.mds_cluster.delete_all_filesystems()
         fs_name = "test_fs_new_pool_application"
         keys = ['metadata', 'data']
         pool_names = [fs_name+'-'+key for key in keys]
@@ -219,6 +244,7 @@ class TestConfigCommands(CephFSTestCase):
             self.assertTrue("NAME" in s)
             self.assertTrue("mon_host" in s)
 
+
     def test_client_config(self):
         """
         That I can successfully issue asok "config set" commands
@@ -267,3 +293,227 @@ class TestConfigCommands(CephFSTestCase):
         # Implicitly asserting that things don't have lockdep error in shutdown
         self.mount_a.umount_wait(require_clean=True)
         self.fs.mds_stop()
+
+
+class TestMirroringCommands(CephFSTestCase):
+    CLIENTS_REQUIRED = 1
+    MDSS_REQUIRED = 1
+
+    def _enable_mirroring(self, fs_name):
+        self.fs.mon_manager.raw_cluster_cmd("fs", "mirror", "enable", fs_name)
+
+    def _disable_mirroring(self, fs_name):
+        self.fs.mon_manager.raw_cluster_cmd("fs", "mirror", "disable", fs_name)
+
+    def _add_peer(self, fs_name, peer_spec, remote_fs_name):
+        self.fs.mon_manager.raw_cluster_cmd("fs", "mirror", "peer_add", fs_name, peer_spec, remote_fs_name)
+
+    def _remove_peer(self, fs_name, peer_uuid):
+        self.fs.mon_manager.raw_cluster_cmd("fs", "mirror", "peer_remove", fs_name, peer_uuid)
+
+    def _verify_mirroring(self, fs_name, flag_str):
+        status = self.fs.status()
+        fs_map = status.get_fsmap_byname(fs_name)
+        if flag_str == 'enabled':
+            self.assertTrue('mirror_info' in fs_map)
+        elif flag_str == 'disabled':
+            self.assertTrue('mirror_info' not in fs_map)
+        else:
+            raise RuntimeError(f'invalid flag_str {flag_str}')
+
+    def _get_peer_uuid(self, fs_name, peer_spec):
+        status = self.fs.status()
+        fs_map = status.get_fsmap_byname(fs_name)
+        mirror_info = fs_map.get('mirror_info', None)
+        self.assertTrue(mirror_info is not None)
+        for uuid, remote in mirror_info['peers'].items():
+            client_name = remote['remote']['client_name']
+            cluster_name = remote['remote']['cluster_name']
+            spec = f'{client_name}@{cluster_name}'
+            if spec == peer_spec:
+                return uuid
+        return None
+
+    def test_mirroring_command(self):
+        """basic mirroring command test -- enable, disable mirroring on a
+        filesystem"""
+        self._enable_mirroring(self.fs.name)
+        self._verify_mirroring(self.fs.name, "enabled")
+        self._disable_mirroring(self.fs.name)
+        self._verify_mirroring(self.fs.name, "disabled")
+
+    def test_mirroring_peer_commands(self):
+        """test adding and removing peers to a mirror enabled filesystem"""
+        self._enable_mirroring(self.fs.name)
+        self._add_peer(self.fs.name, "client.site-b@site-b", "fs_b")
+        self._add_peer(self.fs.name, "client.site-c@site-c", "fs_c")
+        self._verify_mirroring(self.fs.name, "enabled")
+        uuid_peer_b = self._get_peer_uuid(self.fs.name, "client.site-b@site-b")
+        uuid_peer_c = self._get_peer_uuid(self.fs.name, "client.site-c@site-c")
+        self.assertTrue(uuid_peer_b is not None)
+        self.assertTrue(uuid_peer_c is not None)
+        self._remove_peer(self.fs.name, uuid_peer_b)
+        self._remove_peer(self.fs.name, uuid_peer_c)
+        self._disable_mirroring(self.fs.name)
+        self._verify_mirroring(self.fs.name, "disabled")
+
+    def test_mirroring_command_idempotency(self):
+        """test to check idempotency of mirroring family of commands """
+        self._enable_mirroring(self.fs.name)
+        self._verify_mirroring(self.fs.name, "enabled")
+        self._enable_mirroring(self.fs.name)
+        # add peer
+        self._add_peer(self.fs.name, "client.site-b@site-b", "fs_b")
+        uuid_peer_b1 = self._get_peer_uuid(self.fs.name, "client.site-b@site-b")
+        self.assertTrue(uuid_peer_b1 is not None)
+        # adding the peer again should be idempotent
+        self._add_peer(self.fs.name, "client.site-b@site-b", "fs_b")
+        uuid_peer_b2 = self._get_peer_uuid(self.fs.name, "client.site-b@site-b")
+        self.assertTrue(uuid_peer_b2 is not None)
+        self.assertTrue(uuid_peer_b1 == uuid_peer_b2)
+        # remove peer
+        self._remove_peer(self.fs.name, uuid_peer_b1)
+        uuid_peer_b3 = self._get_peer_uuid(self.fs.name, "client.site-b@site-b")
+        self.assertTrue(uuid_peer_b3 is None)
+        # removing the peer again should be idempotent
+        self._remove_peer(self.fs.name, uuid_peer_b1)
+        self._disable_mirroring(self.fs.name)
+        self._verify_mirroring(self.fs.name, "disabled")
+        self._disable_mirroring(self.fs.name)
+
+    def test_mirroring_disable_with_peers(self):
+        """test disabling mirroring for a filesystem with active peers"""
+        self._enable_mirroring(self.fs.name)
+        self._add_peer(self.fs.name, "client.site-b@site-b", "fs_b")
+        self._verify_mirroring(self.fs.name, "enabled")
+        uuid_peer_b = self._get_peer_uuid(self.fs.name, "client.site-b@site-b")
+        self.assertTrue(uuid_peer_b is not None)
+        self._disable_mirroring(self.fs.name)
+        self._verify_mirroring(self.fs.name, "disabled")
+        # enable mirroring to check old peers
+        self._enable_mirroring(self.fs.name)
+        self._verify_mirroring(self.fs.name, "enabled")
+        # peer should be gone
+        uuid_peer_b = self._get_peer_uuid(self.fs.name, "client.site-b@site-b")
+        self.assertTrue(uuid_peer_b is None)
+        self._disable_mirroring(self.fs.name)
+        self._verify_mirroring(self.fs.name, "disabled")
+
+    def test_mirroring_with_filesystem_reset(self):
+        """test to verify mirroring state post filesystem reset"""
+        self._enable_mirroring(self.fs.name)
+        self._add_peer(self.fs.name, "client.site-b@site-b", "fs_b")
+        self._verify_mirroring(self.fs.name, "enabled")
+        uuid_peer_b = self._get_peer_uuid(self.fs.name, "client.site-b@site-b")
+        self.assertTrue(uuid_peer_b is not None)
+        # reset filesystem
+        self.fs.fail()
+        self.fs.mon_manager.raw_cluster_cmd("fs", "reset", self.fs.name, "--yes-i-really-mean-it")
+        self.fs.wait_for_daemons()
+        self._verify_mirroring(self.fs.name, "disabled")
+
+
+class TestSubCmdFsAuthorize(CapsHelper):
+    client_id = 'testuser'
+    client_name = 'client.' + client_id
+
+    def test_single_path_r(self):
+        perm = 'r'
+        filepaths, filedata, mounts, keyring = self.setup_test_env(perm)
+        moncap = self.get_mon_cap_from_keyring(self.client_name)
+
+        self.run_mon_cap_tests(moncap, keyring)
+        self.run_mds_cap_tests(filepaths, filedata, mounts, perm)
+
+    def test_single_path_rw(self):
+        perm = 'rw'
+        filepaths, filedata, mounts, keyring = self.setup_test_env(perm)
+        moncap = self.get_mon_cap_from_keyring(self.client_name)
+
+        self.run_mon_cap_tests(moncap, keyring)
+        self.run_mds_cap_tests(filepaths, filedata, mounts, perm)
+
+    def test_multiple_path_r(self):
+        perm, paths = 'r', ('/dir1', '/dir2/dir22')
+        filepaths, filedata, mounts, keyring = self.setup_test_env(perm, paths)
+        moncap = self.get_mon_cap_from_keyring(self.client_name)
+
+        keyring_path = self.create_keyring_file(self.mount_a.client_remote,
+                                                keyring)
+        for path in paths:
+            self.mount_a.remount(client_id=self.client_id,
+                                 client_keyring_path=keyring_path,
+                                 cephfs_mntpt=path)
+
+
+            # actual tests...
+            self.run_mon_cap_tests(moncap, keyring)
+            self.run_mds_cap_tests(filepaths, filedata, mounts, perm)
+
+    def test_multiple_path_rw(self):
+        perm, paths = 'rw', ('/dir1', '/dir2/dir22')
+        filepaths, filedata, mounts, keyring = self.setup_test_env(perm, paths)
+        moncap = self.get_mon_cap_from_keyring(self.client_name)
+
+        keyring_path = self.create_keyring_file(self.mount_a.client_remote,
+                                                keyring)
+        for path in paths:
+            self.mount_a.remount(client_id=self.client_id,
+                                 client_keyring_path=keyring_path,
+                                 cephfs_mntpt=path)
+
+
+            # actual tests...
+            self.run_mon_cap_tests(moncap, keyring)
+            self.run_mds_cap_tests(filepaths, filedata, mounts, perm)
+
+    def tearDown(self):
+        self.mount_a.umount_wait()
+        self.run_cluster_cmd(f'auth rm {self.client_name}')
+
+        super(type(self), self).tearDown()
+
+    def setup_for_single_path(self, perm):
+        filedata, filename = 'some data on fs 1', 'file_on_fs1'
+
+        filepath = os_path_join(self.mount_a.hostfs_mntpt, filename)
+        self.mount_a.write_file(filepath, filedata)
+
+        keyring = self.fs.authorize(self.client_id, ('/', perm))
+        keyring_path = self.create_keyring_file(self.mount_a.client_remote,
+                                                keyring)
+
+        self.mount_a.remount(client_id=self.client_id,
+                             client_keyring_path=keyring_path,
+                             cephfs_mntpt='/')
+
+        return filepath, filedata, keyring
+
+    def setup_for_multiple_paths(self, perm, paths):
+        filedata, filename = 'some data on fs 1', 'file_on_fs1'
+
+        self.mount_a.run_shell('mkdir -p dir1/dir12/dir13 dir2/dir22/dir23')
+
+        filepaths = []
+        for path in paths:
+            filepath = os_path_join(self.mount_a.hostfs_mntpt, path[1:], filename)
+            self.mount_a.write_file(filepath, filedata)
+            filepaths.append(filepath.replace(path, ''))
+        filepaths = tuple(filepaths)
+
+        keyring = self.fs.authorize(self.client_id, (path[0], perm, path[1],
+                                                     perm))
+
+        return filepaths, filedata, keyring
+
+    def setup_test_env(self, perm, paths=()):
+        filepaths, filedata, keyring = self.setup_for_multiple_paths(perm, paths) if paths \
+            else self.setup_for_single_path(perm)
+
+        if not isinstance(filepaths, tuple):
+            filepaths = (filepaths, )
+        if not isinstance(filedata, tuple):
+            filedata = (filedata, )
+        mounts = (self.mount_a, )
+
+        return filepaths, filedata, mounts, keyring

@@ -43,8 +43,8 @@ set(librbd_internal_srcs
   cache/ObjectCacherObjectDispatch.cc
   cache/ObjectCacherWriteback.cc
   cache/PassthroughImageCache.cc
-  cache/rwl/InitRequest.cc
-  cache/rwl/ShutdownRequest.cc
+  cache/pwl/InitRequest.cc
+  cache/pwl/ShutdownRequest.cc
   cache/WriteAroundObjectDispatch.cc
   crypto/CryptoObjectDispatch.cc
   deep_copy/ImageCopyRequest.cc
@@ -167,27 +167,12 @@ set(librbd_internal_srcs
   operation/SnapshotLimitRequest.cc
   operation/SparsifyRequest.cc
   operation/TrimRequest.cc
+  plugin/Api.cc
   trash/MoveRequest.cc
   trash/RemoveRequest.cc
   watcher/Notifier.cc
   watcher/RewatchRequest.cc
   ${CMAKE_SOURCE_DIR}/src/common/ContextCompletion.cc)
-
-add_custom_target(librbd_plugins)
-set(librbd_plugins_dir ${CEPH_INSTALL_PKGLIBDIR}/librbd)
-
-set(rbd_plugin_parent_cache_srcs
-  cache/ParentCacheObjectDispatch.cc
-  plugin/ParentCache.cc)
-add_library(librbd_plugin_parent_cache SHARED ${rbd_plugin_parent_cache_srcs})
-target_link_libraries(librbd_plugin_parent_cache PRIVATE
-  ceph_immutable_object_cache_lib)
-set_target_properties(librbd_plugin_parent_cache PROPERTIES
-  OUTPUT_NAME ceph_librbd_parent_cache
-  VERSION 1.0.0
-  SOVERSION 1)
-install(TARGETS librbd_plugin_parent_cache DESTINATION ${librbd_plugins_dir})
-add_dependencies(librbd_plugins librbd_plugin_parent_cache)
 
 if(WITH_EVENTTRACE)
   list(APPEND librbd_internal_srcs ../common/EventTrace.cc)
@@ -196,15 +181,17 @@ endif()
 if(WITH_RBD_RWL)
   set(librbd_internal_srcs
     ${librbd_internal_srcs}
-    cache/rwl/ImageCacheState.cc
-    cache/rwl/LogEntry.cc
-    cache/rwl/LogMap.cc
-    cache/rwl/LogOperation.cc
-    cache/rwl/ReadRequest.cc
-    cache/rwl/Request.cc
-    cache/rwl/SyncPoint.cc
-    cache/rwl/Types.cc
-    cache/ReplicatedWriteLog.cc)
+    cache/pwl/ImageCacheState.cc
+    cache/pwl/LogEntry.cc
+    cache/pwl/LogMap.cc
+    cache/pwl/LogOperation.cc
+    cache/pwl/ReadRequest.cc
+    cache/pwl/Request.cc
+    cache/pwl/SyncPoint.cc
+    cache/pwl/Types.cc
+    cache/pwl/ReplicatedWriteLog.cc
+    cache/pwl/AbstractWriteLog.cc
+    cache/WriteLogCache.cc)
 endif()
 
 add_library(rbd_api STATIC librbd.cc)
@@ -221,19 +208,36 @@ if(WITH_EVENTTRACE)
   add_dependencies(rbd_internal eventtrace_tp)
 endif()
 target_link_libraries(rbd_internal PRIVATE
-  osdc)
+  osdc rbd_types)
 
 if(WITH_RBD_RWL)
   target_link_libraries(rbd_internal
     PUBLIC blk)
 endif()
 
+add_custom_target(librbd_plugins)
+set(librbd_plugins_dir ${CEPH_INSTALL_PKGLIBDIR}/librbd)
+
+set(rbd_plugin_parent_cache_srcs
+  cache/ParentCacheObjectDispatch.cc
+  plugin/ParentCache.cc)
+add_library(librbd_plugin_parent_cache SHARED
+  ${rbd_plugin_parent_cache_srcs})
+target_link_libraries(librbd_plugin_parent_cache PRIVATE
+  ceph_immutable_object_cache_lib ceph-common librbd
+  librados)
+set_target_properties(librbd_plugin_parent_cache PROPERTIES
+  OUTPUT_NAME ceph_librbd_parent_cache
+  VERSION 1.0.0
+  SOVERSION 1)
+install(TARGETS librbd_plugin_parent_cache DESTINATION ${librbd_plugins_dir})
+add_dependencies(librbd_plugins librbd_plugin_parent_cache)
+
 add_library(librbd ${CEPH_SHARED}
   librbd.cc)
 if(WITH_LTTNG)
   add_dependencies(librbd librbd-tp)
 endif()
-add_dependencies(librbd librbd_plugins)
 
 target_link_libraries(librbd PRIVATE
   rbd_internal
@@ -259,7 +263,7 @@ if(ENABLE_SHARED)
     SOVERSION 1
     CXX_VISIBILITY_PRESET hidden
     VISIBILITY_INLINES_HIDDEN ON)
-    if(NOT APPLE)
+    if(NOT APPLE AND NOT WIN32)
       set_property(TARGET librbd APPEND_STRING PROPERTY
         LINK_FLAGS " -Wl,--exclude-libs,ALL")
     endif()

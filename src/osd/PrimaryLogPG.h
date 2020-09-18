@@ -17,6 +17,11 @@
 #ifndef CEPH_REPLICATEDPG_H
 #define CEPH_REPLICATEDPG_H
 
+#define BOOST_MPL_CFG_NO_PREPROCESSED_HEADERS
+#if !defined(BOOST_MPL_LIMIT_LIST_SIZE)
+#   define BOOST_MPL_LIMIT_LIST_SIZE 30
+#endif
+
 #include <boost/tuple/tuple.hpp>
 #include "include/ceph_assert.h"
 #include "DynamicPerfStats.h"
@@ -536,6 +541,9 @@ public:
   uint64_t min_peer_features() const override {
     return recovery_state.get_min_peer_features();
   }
+  uint64_t min_upacting_features() const override {
+    return recovery_state.get_min_upacting_features();
+  }
   void send_message_osd_cluster(
     int peer, Message *m, epoch_t from_epoch) override {
     osd->send_message_osd_cluster(peer, m, from_epoch);
@@ -601,7 +609,7 @@ public:
     bool modify;          // (force) modification (even if op_t is empty)
     bool user_modify;     // user-visible modification
     bool undirty;         // user explicitly un-dirtying this object
-    bool cache_evict;     ///< true if this is a cache eviction
+    bool cache_operation;     ///< true if this is a cache eviction
     bool ignore_cache;    ///< true if IGNORE_CACHE flag is std::set
     bool ignore_log_op_stats;  // don't log op stats
     bool update_log_only; ///< this is a write that returned an error - just record in pg log for dup detection
@@ -708,7 +716,7 @@ public:
       obs(&obc->obs),
       snapset(0),
       new_obs(obs->oi, obs->exists),
-      modify(false), user_modify(false), undirty(false), cache_evict(false),
+      modify(false), user_modify(false), undirty(false), cache_operation(false),
       ignore_cache(false), ignore_log_op_stats(false), update_log_only(false),
       bytes_written(0), bytes_read(0), user_at_version(0),
       current_osd_subop_num(0),
@@ -727,7 +735,7 @@ public:
     OpContext(OpRequestRef _op, osd_reqid_t _reqid,
               std::vector<OSDOp>* _ops, PrimaryLogPG *_pg) :
       op(_op), reqid(_reqid), ops(_ops), obs(NULL), snapset(0),
-      modify(false), user_modify(false), undirty(false), cache_evict(false),
+      modify(false), user_modify(false), undirty(false), cache_operation(false),
       ignore_cache(false), ignore_log_op_stats(false), update_log_only(false),
       bytes_written(0), bytes_read(0), user_at_version(0),
       current_osd_subop_num(0),
@@ -1053,8 +1061,8 @@ protected:
   std::map<hobject_t, std::map<client_t, ceph_tid_t>> debug_op_order;
 
   void populate_obc_watchers(ObjectContextRef obc);
-  void check_blacklisted_obc_watchers(ObjectContextRef obc);
-  void check_blacklisted_watchers() override;
+  void check_blocklisted_obc_watchers(ObjectContextRef obc);
+  void check_blocklisted_watchers() override;
   void get_watchers(std::list<obj_watch_item_t> *ls) override;
   void get_obc_watchers(ObjectContextRef obc, std::list<obj_watch_item_t> &pg_watchers);
 public:
@@ -1490,24 +1498,21 @@ protected:
   void process_copy_chunk_manifest(hobject_t oid, ceph_tid_t tid, int r, uint64_t offset);
   void finish_promote_manifest(int r, CopyResults *results, ObjectContextRef obc);
   void cancel_and_requeue_proxy_ops(hobject_t oid);
-  int do_manifest_flush(OpRequestRef op, ObjectContextRef obc, FlushOpRef manifest_fop,
-			uint64_t start_offset, bool block);
-  int start_manifest_flush(OpRequestRef op, ObjectContextRef obc, bool blocking,
-			   std::optional<std::function<void()>> &&on_flush);
-  void finish_manifest_flush(hobject_t oid, ceph_tid_t tid, int r, ObjectContextRef obc, 
-			     uint64_t last_offset);
-  void handle_manifest_flush(hobject_t oid, ceph_tid_t tid, int r,
-			     uint64_t offset, uint64_t last_offset, epoch_t lpr);
   void cancel_manifest_ops(bool requeue, vector<ceph_tid_t> *tids);
   void refcount_manifest(hobject_t src_soid, hobject_t tgt_soid, refcount_t type,
 			 RefCountCallback* cb);
   void dec_all_refcount_manifest(const object_info_t& oi, OpContext* ctx);
-  void dec_refcount(ObjectContextRef obc, const object_ref_delta_t& refs);
+  void dec_refcount(const hobject_t& soid, const object_ref_delta_t& refs);
+  void dec_refcount_by_dirty(OpContext* ctx);
+  ObjectContextRef get_prev_clone_obc(ObjectContextRef obc);
+  void get_adjacent_clones(const object_info_t& oi, OpContext* ctx, 
+			   ObjectContextRef& _l, ObjectContextRef& _g);
+  bool inc_refcount_by_set(OpContext* ctx, object_manifest_t& tgt,
+			   OSDOp& osd_op);
 
   friend struct C_ProxyChunkRead;
   friend class PromoteManifestCallback;
   friend struct C_CopyChunk;
-  friend struct C_ManifestFlush;
   friend struct RefCountCallback;
 
 public:

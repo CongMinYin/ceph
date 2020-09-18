@@ -5,7 +5,7 @@
 #include "common/AsyncOpTracker.h"
 #include "common/dout.h"
 #include "common/errno.h"
-#include "librbd/cache/rwl/ShutdownRequest.h"
+#include "librbd/cache/pwl/ShutdownRequest.h"
 #include "librbd/ExclusiveLock.h"
 #include "librbd/ImageState.h"
 #include "librbd/ImageWatcher.h"
@@ -127,9 +127,9 @@ void PreReleaseRequest<I>::handle_block_writes(int r) {
   CephContext *cct = m_image_ctx.cct;
   ldout(cct, 10) << "r=" << r << dendl;
 
-  if (r == -EBLACKLISTED) {
-    // allow clean shut down if blacklisted
-    lderr(cct) << "failed to block writes because client is blacklisted"
+  if (r == -EBLOCKLISTED) {
+    // allow clean shut down if blocklisted
+    lderr(cct) << "failed to block writes because client is blocklisted"
                << dendl;
   } else if (r < 0) {
     lderr(cct) << "failed to block writes: " << cpp_strerror(r) << dendl;
@@ -174,7 +174,7 @@ void PreReleaseRequest<I>::send_shut_down_image_cache() {
   Context *ctx = create_async_context_callback(m_image_ctx, create_context_callback<
       PreReleaseRequest<I>,
       &PreReleaseRequest<I>::handle_shut_down_image_cache>(this));
-  cache::rwl::ShutdownRequest<I> *req = cache::rwl::ShutdownRequest<I>::create(
+  cache::pwl::ShutdownRequest<I> *req = cache::pwl::ShutdownRequest<I>::create(
     m_image_ctx, ctx);
   req->send();
 }
@@ -213,7 +213,7 @@ void PreReleaseRequest<I>::handle_invalidate_cache(int r) {
   CephContext *cct = m_image_ctx.cct;
   ldout(cct, 10) << "r=" << r << dendl;
 
-  if (r < 0 && r != -EBLACKLISTED && r != -EBUSY) {
+  if (r < 0 && r != -EBLOCKLISTED && r != -EBUSY) {
     lderr(cct) << "failed to invalidate cache: " << cpp_strerror(r)
                << dendl;
     m_image_dispatch->unset_require_lock(io::DIRECTION_BOTH);

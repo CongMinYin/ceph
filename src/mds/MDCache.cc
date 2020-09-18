@@ -151,7 +151,6 @@ MDCache::MDCache(MDSRank *m, PurgeQueue &purge_queue_) :
   cache_memory_limit = g_conf().get_val<Option::size_t>("mds_cache_memory_limit");
   cache_reservation = g_conf().get_val<double>("mds_cache_reservation");
   cache_health_threshold = g_conf().get_val<double>("mds_health_cache_threshold");
-  forward_all_requests_to_auth = g_conf().get_val<bool>("mds_forward_all_requests_to_auth");
 
   export_ephemeral_distributed_config =  g_conf().get_val<bool>("mds_export_ephemeral_distributed");
   export_ephemeral_random_config =  g_conf().get_val<bool>("mds_export_ephemeral_random");
@@ -254,9 +253,6 @@ void MDCache::handle_conf_change(const std::set<std::string>& changed, const MDS
   if (changed.count("mds_cache_trim_decay_rate")) {
     trim_counter = DecayCounter(g_conf().get_val<double>("mds_cache_trim_decay_rate"));
   }
-  if (changed.count("mds_forward_all_requests_to_auth")){
-    forward_all_requests_to_auth = g_conf().get_val<bool>("mds_forward_all_requests_to_auth");
-  }
 
   migrator->handle_conf_change(changed, mdsmap);
   mds->balancer->handle_conf_change(changed, mdsmap);
@@ -352,6 +348,8 @@ void MDCache::remove_inode(CInode *o)
     o->clear_dirty_parent();
 
   o->clear_scatter_dirty();
+
+  o->clear_clientwriteable();
 
   o->item_open_file.remove_myself();
 
@@ -5452,19 +5450,43 @@ bool MDCache::process_imported_caps()
     return true;
   }
 
-  for (auto p = cap_imports.begin(); p != cap_imports.end(); ++p) {
-    CInode *in = get_inode(p->first);
+  for (auto& p : cap_imports) {
+    CInode *in = get_inode(p.first);
     if (in) {
       ceph_assert(in->is_auth());
-      cap_imports_missing.erase(p->first);
+      cap_imports_missing.erase(p.first);
       continue;
     }
-    if (cap_imports_missing.count(p->first) > 0)
+    if (cap_imports_missing.count(p.first) > 0)
       continue;
 
+    uint64_t parent_ino = 0;
+    std::string_view d_name;
+    for (auto& q : p.second) {
+      for (auto& r : q.second) {
+	auto &icr = r.second;
+	if (icr.capinfo.pathbase &&
+	    icr.path.length() > 0 &&
+	    icr.path.find('/') == string::npos) {
+	  parent_ino = icr.capinfo.pathbase;
+	  d_name = icr.path;
+	  break;
+	}
+      }
+      if (parent_ino)
+	break;
+    }
+
+    dout(10) << "  opening missing ino " << p.first << dendl;
     cap_imports_num_opening++;
-    dout(10) << "  opening missing ino " << p->first << dendl;
-    open_ino(p->first, (int64_t)-1, new C_MDC_RejoinOpenInoFinish(this, p->first), false);
+    auto fin = new C_MDC_RejoinOpenInoFinish(this, p.first);
+    if (parent_ino) {
+      vector<inode_backpointer_t> ancestors;
+      ancestors.push_back(inode_backpointer_t(parent_ino, string{d_name}, 0));
+      open_ino(p.first, (int64_t)-1, fin, false, false, &ancestors);
+    } else {
+      open_ino(p.first, (int64_t)-1, fin, false);
+    }
     if (!(cap_imports_num_opening % 1000))
       mds->heartbeat_reset();
   }
@@ -6399,14 +6421,18 @@ void MDCache::identify_files_to_recover()
     }
     
     bool recover = false;
-    for (auto& p : in->get_inode()->client_ranges) {
-      Capability *cap = in->get_client_cap(p.first);
-      if (cap) {
-	cap->mark_clientwriteable();
-      } else {
-	dout(10) << " client." << p.first << " has range " << p.second << " but no cap on " << *in << dendl;
-	recover = true;
-	break;
+    const auto& client_ranges = in->get_projected_inode()->client_ranges;
+    if (!client_ranges.empty()) {
+      in->mark_clientwriteable();
+      for (auto& p : client_ranges) {
+	Capability *cap = in->get_client_cap(p.first);
+	if (cap) {
+	  cap->mark_clientwriteable();
+	} else {
+	  dout(10) << " client." << p.first << " has range " << p.second << " but no cap on " << *in << dendl;
+	  recover = true;
+	  break;
+	}
       }
     }
 
@@ -8601,8 +8627,7 @@ int MDCache::path_traverse(MDRequestRef& mdr, MDSContextFactory& cf,
       // dirfrag/dentry is not mine.
       mds_authority_t dauth = curdir->authority();
 
-      if (!forward_all_requests_to_auth &&
-	  forward &&
+      if (forward &&
 	  mdr && mdr->client_request &&
 	  (int)depth < mdr->client_request->get_num_fwd()){
 	dout(7) << "traverse: snap " << snapid << " and depth " << depth
@@ -9310,7 +9335,9 @@ void MDCache::kick_open_ino_peers(mds_rank_t who)
 }
 
 void MDCache::open_ino(inodeno_t ino, int64_t pool, MDSContext* fin,
-		       bool want_replica, bool want_xlocked)
+		       bool want_replica, bool want_xlocked,
+		       vector<inode_backpointer_t> *ancestors_hint,
+		       mds_rank_t auth_hint)
 {
   dout(10) << "open_ino " << ino << " pool " << pool << " want_replica "
 	   << want_replica << dendl;
@@ -9343,8 +9370,10 @@ void MDCache::open_ino(inodeno_t ino, int64_t pool, MDSContext* fin,
     info.tid = ++open_ino_last_tid;
     info.pool = pool >= 0 ? pool : default_file_layout.pool_id;
     info.waiters.push_back(fin);
-    if (mds->is_rejoin() &&
-	open_file_table.get_ancestors(ino, info.ancestors, info.auth_hint)) {
+    if (auth_hint != MDS_RANK_NONE)
+      info.auth_hint = auth_hint;
+    if (ancestors_hint) {
+      info.ancestors = std::move(*ancestors_hint);
       info.fetch_backtrace = false;
       info.checking = mds->get_nodeid();
       _open_ino_traverse_dir(ino, info, 0);
@@ -12003,6 +12032,8 @@ void MDCache::_fragment_logged(MDRequestRef& mdr)
   for (const auto& dir : info.resultfrags) {
     dout(10) << " storing result frag " << *dir << dendl;
 
+    dir->mark_new(mdr->ls);
+
     // freeze and store them too
     dir->auth_pin(this);
     dir->state_set(CDir::STATE_FRAGMENTING);
@@ -12609,6 +12640,8 @@ void MDCache::show_subtrees(int dbl, bool force_print)
 
 void MDCache::show_cache()
 {
+  if (!g_conf()->subsys.should_gather<ceph_subsys_mds, 7>())
+    return;
   dout(7) << "show_cache" << dendl;
 
   auto show_func = [this](CInode *in) {

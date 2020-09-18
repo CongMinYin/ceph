@@ -1,6 +1,11 @@
 // -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
 // vim: ts=8 sw=2 smarttab
 
+#define BOOST_MPL_CFG_NO_PREPROCESSED_HEADERS
+#if !defined(BOOST_MPL_LIMIT_LIST_SIZE)
+#   define BOOST_MPL_LIMIT_LIST_SIZE 30
+#endif
+
 #include <seastar/core/future.hh>
 
 #include "osd/PeeringState.h"
@@ -64,27 +69,23 @@ std::vector<OperationRef> handle_pg_create(
   Ref<MOSDPGCreate2> m)
 {
   std::vector<OperationRef> ret;
-  for (auto &p : m->pgs) {
-    const spg_t &pgid = p.first;
-    const auto &[created, created_stamp] = p.second;
+  for (auto& [pgid, when] : m->pgs) {
+    const auto &[created, created_stamp] = when;
     auto q = m->pg_extra.find(pgid);
     ceph_assert(q != m->pg_extra.end());
+    auto& [history, pi] = q->second;
     logger().debug(
-      "{}, {} {} e{} @{} history {} pi {}",
-      __func__,
-      pgid,
-      created,
-      created_stamp,
-      q->second.first,
-      q->second.second);
-    if (!q->second.second.empty() &&
-	m->epoch < q->second.second.get_bounds().second) {
+      "{}: {} e{} @{} "
+      "history {} pi {}",
+      __func__, pgid, created, created_stamp,
+      history, pi);
+    if (!pi.empty() &&
+	m->epoch < pi.get_bounds().second) {
       logger().error(
-	"got pg_create on {} epoch {} unmatched past_intervals (history {})",
-	pgid,
-	m->epoch,
-	q->second.second,
-	q->second.first);
+        "got pg_create on {} epoch {}  "
+        "unmatched past_intervals {} (history {})",
+        pgid, m->epoch,
+        pi, history);
     } else {
       auto op = osd.get_shard_services().start_operation<PeeringSubEvent>(
 	  state,
@@ -97,12 +98,7 @@ std::vector<OperationRef> handle_pg_create(
 	  m->epoch,
 	  NullEvt(),
 	  true,
-	  new PGCreateInfo(
-	    pgid,
-	    m->epoch,
-	    q->second.first,
-	    q->second.second,
-	    true)).first;
+	  new PGCreateInfo(pgid, m->epoch, history, pi, true)).first;
       ret.push_back(op);
     }
   }

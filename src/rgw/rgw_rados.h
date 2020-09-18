@@ -26,6 +26,7 @@
 #include "rgw_sync_module.h"
 #include "rgw_trim_bilog.h"
 #include "rgw_service.h"
+#include "rgw_sal.h"
 
 #include "services/svc_rados.h"
 #include "services/svc_bi_rados.h"
@@ -135,13 +136,6 @@ struct RGWUsageBatch {
     *account = !exists;
     m[t].aggregate(entry);
   }
-};
-
-struct RGWUsageIter {
-  string read_iter;
-  uint32_t index;
-
-  RGWUsageIter() : index(0) {}
 };
 
 class RGWGetDataCB {
@@ -411,6 +405,7 @@ class RGWRados
   friend class RGWBucketReshardLock;
   friend class BucketIndexLockGuard;
   friend class RGWCompleteMultipart;
+  friend class rgw::sal::RGWRadosStore;
 
   /** Open the pool used as root for this gateway */
   int open_root_pool_ctx();
@@ -418,6 +413,7 @@ class RGWRados
   int open_lc_pool_ctx();
   int open_objexp_pool_ctx();
   int open_reshard_pool_ctx();
+  int open_notif_pool_ctx();
 
   int open_pool_ctx(const rgw_pool& pool, librados::IoCtx&  io_ctx,
 		    bool mostly_omap);
@@ -460,7 +456,6 @@ class RGWRados
   // This field represents the number of bucket index object shards
   uint32_t bucket_index_max_shards;
 
-  int get_obj_head_ioctx(const RGWBucketInfo& bucket_info, const rgw_obj& obj, librados::IoCtx *ioctx);
   int get_obj_head_ref(const RGWBucketInfo& bucket_info, const rgw_obj& obj, rgw_rados_ref *ref);
   int get_system_obj_ref(const rgw_raw_obj& obj, rgw_rados_ref *ref);
   uint64_t max_bucket_id;
@@ -493,6 +488,7 @@ protected:
   librados::IoCtx lc_pool_ctx;        // .rgw.lc
   librados::IoCtx objexp_pool_ctx;
   librados::IoCtx reshard_pool_ctx;
+  librados::IoCtx notif_pool_ctx;     // .rgw.notif
 
   bool pools_initialized;
 
@@ -506,6 +502,8 @@ protected:
   RGWIndexCompletionManager *index_completion_manager{nullptr};
 
   bool use_cache{false};
+
+  int get_obj_head_ioctx(const RGWBucketInfo& bucket_info, const rgw_obj& obj, librados::IoCtx *ioctx);
 public:
   RGWRados(): timer(NULL),
                gc(NULL), lc(NULL), obj_expirer(NULL), use_gc_thread(false), use_lc_thread(false), quota_threads(false),
@@ -561,6 +559,11 @@ public:
   librados::IoCtx* get_lc_pool_ctx() {
     return &lc_pool_ctx;
   }
+
+  librados::IoCtx& get_notif_pool_ctx() {
+    return notif_pool_ctx;
+  }
+
   void set_context(CephContext *_cct) {
     cct = _cct;
   }

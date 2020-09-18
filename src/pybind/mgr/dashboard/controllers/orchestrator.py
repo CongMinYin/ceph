@@ -5,14 +5,19 @@ import os.path
 import time
 from functools import wraps
 
-from . import ApiController, Endpoint, ReadPermission, UpdatePermission
+from . import ApiController, Endpoint, ReadPermission, UpdatePermission, ControllerDoc, EndpointDoc
 from . import RESTController, Task
 from .. import mgr
 from ..exceptions import DashboardException
 from ..security import Scope
 from ..services.exception import handle_orchestrator_error
-from ..services.orchestrator import OrchClient
-from ..tools import TaskManager
+from ..services.orchestrator import OrchClient, OrchFeature
+from ..tools import TaskManager, str_to_bool
+
+STATUS_SCHEMA = {
+    "available": (bool, "Orchestrator status"),
+    "description": (str, "Description")
+}
 
 
 def get_device_osd_map():
@@ -53,30 +58,43 @@ def orchestrator_task(name, metadata, wait_for=2.0):
     return Task("orchestrator/{}".format(name), metadata, wait_for)
 
 
-def raise_if_no_orchestrator(method):
-    @wraps(method)
-    def inner(self, *args, **kwargs):
-        orch = OrchClient.instance()
-        if not orch.available():
-            raise DashboardException(code='orchestrator_status_unavailable',  # pragma: no cover
-                                     msg='Orchestrator is unavailable',
-                                     component='orchestrator',
-                                     http_status_code=503)
-        return method(self, *args, **kwargs)
+def raise_if_no_orchestrator(features=None):
+    def inner(method):
+        @wraps(method)
+        def _inner(self, *args, **kwargs):
+            orch = OrchClient.instance()
+            if not orch.available():
+                raise DashboardException(code='orchestrator_status_unavailable',  # pragma: no cover
+                                         msg='Orchestrator is unavailable',
+                                         component='orchestrator',
+                                         http_status_code=503)
+            if features is not None:
+                missing = orch.get_missing_features(features)
+                if missing:
+                    msg = 'Orchestrator feature(s) are unavailable: {}'.format(', '.join(missing))
+                    raise DashboardException(code='orchestrator_features_unavailable',
+                                             msg=msg,
+                                             component='orchestrator',
+                                             http_status_code=503)
+            return method(self, *args, **kwargs)
+        return _inner
     return inner
 
 
 @ApiController('/orchestrator')
+@ControllerDoc("Orchestrator Management API", "Orchestrator")
 class Orchestrator(RESTController):
 
     @Endpoint()
     @ReadPermission
+    @EndpointDoc("Display Orchestrator Status",
+                 responses={200: STATUS_SCHEMA})
     def status(self):
         return OrchClient.instance().status()
 
     @Endpoint(method='POST')
     @UpdatePermission
-    @raise_if_no_orchestrator
+    @raise_if_no_orchestrator([OrchFeature.DEVICE_BLINK_LIGHT])
     @handle_orchestrator_error('osd')
     @orchestrator_task('identify_device', ['{hostname}', '{device}'])
     def identify_device(self, hostname, device, duration):  # pragma: no cover
@@ -100,13 +118,17 @@ class Orchestrator(RESTController):
 
 
 @ApiController('/orchestrator/inventory', Scope.HOSTS)
+@ControllerDoc("Get Orchestrator Inventory Details", "OrchestratorInventory")
 class OrchestratorInventory(RESTController):
 
-    @raise_if_no_orchestrator
-    def list(self, hostname=None):
+    @raise_if_no_orchestrator([OrchFeature.DEVICE_LIST])
+    def list(self, hostname=None, refresh=None):
         orch = OrchClient.instance()
         hosts = [hostname] if hostname else None
-        inventory_hosts = [host.to_json() for host in orch.inventory.list(hosts)]
+        do_refresh = False
+        if refresh is not None:
+            do_refresh = str_to_bool(refresh)
+        inventory_hosts = [host.to_json() for host in orch.inventory.list(hosts, do_refresh)]
         device_osd_map = get_device_osd_map()
         for inventory_host in inventory_hosts:
             host_osds = device_osd_map.get(inventory_host['name'])

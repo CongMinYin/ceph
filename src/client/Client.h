@@ -790,10 +790,8 @@ protected:
   void resend_unsafe_requests(MetaSession *s);
   void wait_unsafe_requests();
 
-  void _sync_write_commit(Inode *in);
-
   void dump_mds_requests(Formatter *f);
-  void dump_mds_sessions(Formatter *f);
+  void dump_mds_sessions(Formatter *f, bool cap_dump=false);
 
   int make_request(MetaRequest *req, const UserPerm& perms,
 		   InodeRef *ptarget = 0, bool *pcreated = 0,
@@ -869,6 +867,8 @@ protected:
   // -- metadata cache stuff
 
   // decrease inode ref.  delete if dangling.
+  void _put_inode(Inode *in, int n);
+  void delay_put_inodes(bool wakeup=false);
   void put_inode(Inode *in, int n=1);
   void close_dir(Dir *dir);
 
@@ -1282,6 +1282,7 @@ private:
   size_t _vxattrcb_dir_rentries(Inode *in, char *val, size_t size);
   size_t _vxattrcb_dir_rfiles(Inode *in, char *val, size_t size);
   size_t _vxattrcb_dir_rsubdirs(Inode *in, char *val, size_t size);
+  size_t _vxattrcb_dir_rsnaps(Inode *in, char *val, size_t size);
   size_t _vxattrcb_dir_rbytes(Inode *in, char *val, size_t size);
   size_t _vxattrcb_dir_rctime(Inode *in, char *val, size_t size);
 
@@ -1369,7 +1370,8 @@ private:
   ceph::unordered_set<dir_result_t*> opened_dirs;
   uint64_t fd_gen = 1;
 
-  bool   blacklisted = false;
+  bool   mount_aborted = false;
+  bool   blocklisted = false;
 
   ceph::unordered_map<vinodeno_t, Inode*> inode_map;
   ceph::unordered_map<ino_t, vinodeno_t> faked_ino_map;
@@ -1414,6 +1416,9 @@ private:
 
   uint64_t cap_hits = 0;
   uint64_t cap_misses = 0;
+
+  ceph::spinlock delay_i_lock;
+  std::map<Inode*,int> delay_i_release;
 };
 
 /**
