@@ -3,6 +3,7 @@ import errno
 import logging
 import shlex
 from collections import defaultdict
+from configparser import ConfigParser
 from contextlib import contextmanager
 from functools import wraps
 from tempfile import TemporaryDirectory
@@ -23,7 +24,8 @@ import subprocess
 from ceph.deployment import inventory
 from ceph.deployment.drive_group import DriveGroupSpec
 from ceph.deployment.service_spec import \
-    NFSServiceSpec, RGWSpec, ServiceSpec, PlacementSpec, assert_valid_host
+    NFSServiceSpec, RGWSpec, ServiceSpec, PlacementSpec, assert_valid_host, \
+    CustomContainerSpec
 from cephadm.services.cephadmservice import CephadmDaemonSpec
 
 from mgr_module import MgrModule, HandleCommandResult
@@ -37,6 +39,7 @@ from . import utils
 from .migrations import Migrations
 from .services.cephadmservice import MonService, MgrService, MdsService, RgwService, \
     RbdMirrorService, CrashService, CephadmService
+from .services.container import CustomContainerService
 from .services.iscsi import IscsiService
 from .services.nfs import NFSService
 from .services.osd import RemoveUtil, OSDQueue, OSDService, OSD, NotFoundError
@@ -46,7 +49,8 @@ from .schedule import HostAssignment, HostPlacementSpec
 from .inventory import Inventory, SpecStore, HostCache, EventStore
 from .upgrade import CEPH_UPGRADE_ORDER, CephadmUpgrade
 from .template import TemplateMgr
-from .utils import forall_hosts, CephadmNoImage, cephadmNoImage, is_repo_digest
+from .utils import forall_hosts, CephadmNoImage, cephadmNoImage, \
+    str_to_datetime, datetime_to_str, is_repo_digest
 
 try:
     import remoto
@@ -82,7 +86,6 @@ Host *
   ConnectTimeout=30
 """
 
-DATEFMT = '%Y-%m-%dT%H:%M:%S.%f'
 CEPH_DATEFMT = '%Y-%m-%dT%H:%M:%S.%fZ'
 
 CEPH_TYPES = set(CEPH_UPGRADE_ORDER)
@@ -376,6 +379,7 @@ class CephadmOrchestrator(orchestrator.Orchestrator, MgrModule,
         self.node_exporter_service = NodeExporterService(self)
         self.crash_service = CrashService(self)
         self.iscsi_service = IscsiService(self)
+        self.container_service = CustomContainerService(self)
         self.cephadm_services = {
             'mon': self.mon_service,
             'mgr': self.mgr_service,
@@ -390,9 +394,10 @@ class CephadmOrchestrator(orchestrator.Orchestrator, MgrModule,
             'node-exporter': self.node_exporter_service,
             'crash': self.crash_service,
             'iscsi': self.iscsi_service,
+            'container': self.container_service,
         }
 
-        self.template = TemplateMgr()
+        self.template = TemplateMgr(self)
 
         self.requires_post_actions = set()
 
@@ -653,6 +658,7 @@ class CephadmOrchestrator(orchestrator.Orchestrator, MgrModule,
         suffix = daemon_type not in [
             'mon', 'crash', 'nfs',
             'prometheus', 'node-exporter', 'grafana', 'alertmanager',
+            'container'
         ]
         if forcename:
             if len([d for d in existing if d.daemon_id == forcename]):
@@ -1023,6 +1029,53 @@ class CephadmOrchestrator(orchestrator.Orchestrator, MgrModule,
                     self.event.set()
         return 0, '%s (%s) ok' % (host, addr), err
 
+    @orchestrator._cli_write_command(
+        prefix='cephadm set-extra-ceph-conf',
+        desc="Text that is appended to all daemon's ceph.conf.\n"
+             "Mainly a workaround, till `config generate-minimal-conf` generates\n"
+             "a complete ceph.conf.\n\n"
+             "Warning: this is a dangerous operation.")
+    def _set_extra_ceph_conf(self, inbuf=None) -> HandleCommandResult:
+        if inbuf:
+            # sanity check.
+            cp = ConfigParser()
+            cp.read_string(inbuf, source='<infile>')
+
+        self.set_store("extra_ceph_conf", json.dumps({
+            'conf': inbuf,
+            'last_modified': datetime_to_str(datetime.datetime.utcnow())
+        }))
+        self.log.info('Set extra_ceph_conf')
+        self._kick_serve_loop()
+        return HandleCommandResult()
+
+    @orchestrator._cli_read_command(
+        'cephadm get-extra-ceph-conf',
+        desc='Get extra ceph conf that is appended')
+    def _get_extra_ceph_conf(self) -> HandleCommandResult:
+        return HandleCommandResult(stdout=self.extra_ceph_conf().conf)
+
+    class ExtraCephConf(NamedTuple):
+        conf: str
+        last_modified: Optional[datetime.datetime]
+
+    def extra_ceph_conf(self) -> 'CephadmOrchestrator.ExtraCephConf':
+        data = self.get_store('extra_ceph_conf')
+        if not data:
+            return CephadmOrchestrator.ExtraCephConf('', None)
+        try:
+            j = json.loads(data)
+        except ValueError:
+            self.log.exception('unable to laod extra_ceph_conf')
+            return CephadmOrchestrator.ExtraCephConf('', None)
+        return CephadmOrchestrator.ExtraCephConf(j['conf'], str_to_datetime(j['last_modified']))
+
+    def extra_ceph_conf_is_newer(self, dt: datetime.datetime) -> bool:
+        conf = self.extra_ceph_conf()
+        if not conf.last_modified:
+            return False
+        return conf.last_modified > dt
+
     def _get_connection(self, host: str):
         """
         Setup a connection for running commands on remote host.
@@ -1112,7 +1165,7 @@ To check that the host is reachable:
             self.log.exception(ex)
             raise
 
-    def _get_container_image(self, daemon_name: str) -> str:
+    def _get_container_image(self, daemon_name: str) -> Optional[str]:
         daemon_type = daemon_name.split('.', 1)[0]  # type: ignore
         if daemon_type in CEPH_TYPES or \
                 daemon_type == 'nfs' or \
@@ -1132,6 +1185,11 @@ To check that the host is reachable:
             image = self.container_image_alertmanager
         elif daemon_type == 'node-exporter':
             image = self.container_image_node_exporter
+        elif daemon_type == CustomContainerService.TYPE:
+            # The image can't be resolved, the necessary information
+            # is only available when a container is deployed (given
+            # via spec).
+            image = None
         else:
             assert False, daemon_type
 
@@ -1228,8 +1286,19 @@ To check that the host is reachable:
                         code, '\n'.join(err)))
             return out, err, code
 
-    def _get_hosts(self, label: Optional[str] = '', as_hostspec: bool = False) -> List:
-        return list(self.inventory.filter_by_label(label=label, as_hostspec=as_hostspec))
+    def _hosts_with_daemon_inventory(self) -> List[HostSpec]:
+        """
+        Returns all hosts that went through _refresh_host_daemons().
+
+        This mitigates a potential race, where new host was added *after*
+        ``_refresh_host_daemons()`` was called, but *before*
+        ``_apply_all_specs()`` was called. thus we end up with a hosts
+        where daemons might be running, but we have not yet detected them.
+        """
+        return [
+            h for h in self.inventory.all_specs()
+            if self.cache.host_had_daemon_refresh(h.hostname)
+        ]
 
     def _add_host(self, spec):
         # type: (HostSpec) -> str
@@ -1437,7 +1506,7 @@ To check that the host is reachable:
             for k in ['created', 'started', 'last_configured', 'last_deployed']:
                 v = d.get(k, None)
                 if v:
-                    setattr(sd, k, datetime.datetime.strptime(d[k], DATEFMT))
+                    setattr(sd, k, str_to_datetime(d[k]))
             sd.daemon_type = d['name'].split('.')[0]
             sd.daemon_id = '.'.join(d['name'].split('.')[1:])
             sd.hostname = host
@@ -1500,9 +1569,7 @@ To check that the host is reachable:
         return None
 
     def _deploy_etc_ceph_ceph_conf(self, host: str) -> Optional[str]:
-        ret, config, err = self.check_mon_command({
-            "prefix": "config generate-minimal-conf",
-        })
+        config = self.get_minimal_ceph_conf()
 
         try:
             with self._remote_connection(host) as tpl:
@@ -1524,6 +1591,15 @@ To check that the host is reachable:
         except OrchestratorError as e:
             return f'failed to create /etc/ceph/ceph.conf on {host}: {str(e)}'
         return None
+
+    def get_minimal_ceph_conf(self) -> str:
+        _, config, _ = self.check_mon_command({
+            "prefix": "config generate-minimal-conf",
+        })
+        extra = self.extra_ceph_conf().conf
+        if extra:
+            config += '\n\n' + extra.strip() + '\n'
+        return config
 
     def _invalidate_daemons_and_kick_serve(self, filter_host=None):
         if filter_host:
@@ -1668,7 +1744,7 @@ To check that the host is reachable:
         ).name()):
             return self._daemon_action(daemon_type, daemon_id, host, action)
 
-    def _daemon_action(self, daemon_type, daemon_id, host, action, image=None):
+    def _daemon_action(self, daemon_type, daemon_id, host, action, image=None) -> str:
         daemon_spec: CephadmDaemonSpec = CephadmDaemonSpec(
             host=host,
             daemon_id=daemon_id,
@@ -1680,7 +1756,7 @@ To check that the host is reachable:
         if action == 'redeploy':
             if self.daemon_is_self(daemon_type, daemon_id):
                 self.mgr_service.fail_over()
-                return  # unreachable.
+                return ''  # unreachable
             # stop, recreate the container+unit, then restart
             return self._create_daemon(daemon_spec)
         elif action == 'reconfig':
@@ -1837,11 +1913,7 @@ To check that the host is reachable:
                 'path': path
             }
 
-            custom_template = self.get_store('lsmcli_blink_lights_cmd', None)
-            if custom_template:
-                lsmcli_blink_lights_cmd = self.template.engine.render_plain(custom_template, j2_ctx)
-            else:
-                lsmcli_blink_lights_cmd = self.template.render('lsmcli_blink_lights_cmd.j2', j2_ctx)
+            lsmcli_blink_lights_cmd = self.template.render('lsmcli_blink_lights_cmd.j2', j2_ctx)
 
             cmd = shlex.split(lsmcli_blink_lights_cmd)
 
@@ -1964,16 +2036,35 @@ To check that the host is reachable:
                 hostname=daemon_spec.host,
         ).service_id(), overwrite=True):
 
+            image = ''
             start_time = datetime.datetime.utcnow()
+            ports: List[int] = daemon_spec.ports if daemon_spec.ports else []
+
+            if daemon_spec.daemon_type == 'container':
+                spec: Optional[CustomContainerSpec] = daemon_spec.spec
+                if spec is None:
+                    # Exit here immediately because the required service
+                    # spec to create a daemon is not provided. This is only
+                    # provided when a service is applied via 'orch apply'
+                    # command.
+                    msg = "Failed to {} daemon {} on {}: Required " \
+                          "service specification not provided".format(
+                              'reconfigure' if reconfig else 'deploy',
+                              daemon_spec.name(), daemon_spec.host)
+                    self.log.info(msg)
+                    return msg
+                image = spec.image
+                if spec.ports:
+                    ports.extend(spec.ports)
+
             cephadm_config, deps = self.cephadm_services[daemon_spec.daemon_type].generate_config(
                 daemon_spec)
 
-            daemon_spec.extra_args.extend(['--config-json', '-'])
-
             # TCP port to open in the host firewall
-            if daemon_spec.ports:
-                daemon_spec.extra_args.extend(
-                    ['--tcp-ports', ' '.join(map(str, daemon_spec.ports))])
+            if len(ports) > 0:
+                daemon_spec.extra_args.extend([
+                    '--tcp-ports', ' '.join(map(str, ports))
+                ])
 
             # osd deployments needs an --osd-uuid arg
             if daemon_spec.daemon_type == 'osd':
@@ -1993,6 +2084,8 @@ To check that the host is reachable:
                 self._registry_login(daemon_spec.host, self.registry_url,
                                      self.registry_username, self.registry_password)
 
+            daemon_spec.extra_args.extend(['--config-json', '-'])
+
             self.log.info('%s daemon %s on %s' % (
                 'Reconfiguring' if reconfig else 'Deploying',
                 daemon_spec.name(), daemon_spec.host))
@@ -2002,7 +2095,8 @@ To check that the host is reachable:
                 [
                     '--name', daemon_spec.name(),
                 ] + daemon_spec.extra_args,
-                stdin=json.dumps(cephadm_config))
+                stdin=json.dumps(cephadm_config),
+                image=image)
             if not code and daemon_spec.host in self.cache.daemons:
                 # prime cached service state with what we (should have)
                 # just created
@@ -2074,6 +2168,8 @@ To check that the host is reachable:
         Schedule a service.  Deploy new daemons or remove old ones, depending
         on the target label and count specified in the placement.
         """
+        self.migration.verify_no_migration()
+
         daemon_type = spec.service_type
         service_name = spec.service_name()
         if spec.unmanaged:
@@ -2114,7 +2210,7 @@ To check that the host is reachable:
 
         ha = HostAssignment(
             spec=spec,
-            get_hosts_func=self._get_hosts,
+            hosts=self._hosts_with_daemon_inventory(),
             get_daemons_func=self.cache.get_daemons_by_service,
             filter_new_host=matches_network if daemon_type == 'mon' else None,
         )
@@ -2256,6 +2352,10 @@ To check that the host is reachable:
                 dd.daemon_type in CEPH_TYPES:
                 self.log.info('Reconfiguring %s (monmap changed)...' % dd.name())
                 action = 'reconfig'
+            elif self.extra_ceph_conf_is_newer(last_config) and \
+                    dd.daemon_type in CEPH_TYPES:
+                self.log.info('Reconfiguring %s (extra config changed)...' % dd.name())
+                action = 'reconfig'
             if action:
                 if self.cache.get_scheduled_daemon_action(dd.hostname, dd.name()) == 'redeploy' \
                         and action == 'reconfig':
@@ -2358,8 +2458,6 @@ To check that the host is reachable:
         return self._add_daemon('mgr', spec, self.mgr_service.prepare_create)
 
     def _apply(self, spec: GenericSpec) -> str:
-        self.migration.verify_no_migration()
-
         if spec.service_type == 'host':
             return self._add_host(cast(HostSpec, spec))
 
@@ -2378,7 +2476,7 @@ To check that the host is reachable:
 
         ha = HostAssignment(
             spec=spec,
-            get_hosts_func=self._get_hosts,
+            hosts=self._hosts_with_daemon_inventory(),
             get_daemons_func=self.cache.get_daemons_by_service,
         )
         ha.validate()
@@ -2422,6 +2520,7 @@ To check that the host is reachable:
                 'prometheus': PlacementSpec(count=1),
                 'node-exporter': PlacementSpec(host_pattern='*'),
                 'crash': PlacementSpec(host_pattern='*'),
+                'container': PlacementSpec(count=1),
             }
             spec.placement = defaults[spec.service_type]
         elif spec.service_type in ['mon', 'mgr'] and \
@@ -2432,7 +2531,7 @@ To check that the host is reachable:
 
         HostAssignment(
             spec=spec,
-            get_hosts_func=self._get_hosts,
+            hosts=self.inventory.all_specs(),  # All hosts, even those without daemon refresh
             get_daemons_func=self.cache.get_daemons_by_service,
         ).validate()
 
@@ -2542,6 +2641,15 @@ To check that the host is reachable:
 
     @trivial_completion
     def apply_alertmanager(self, spec: ServiceSpec) -> str:
+        return self._apply(spec)
+
+    @trivial_completion
+    def add_container(self, spec: ServiceSpec) -> List[str]:
+        return self._add_daemon('container', spec,
+                                self.container_service.prepare_create)
+
+    @trivial_completion
+    def apply_container(self, spec: ServiceSpec) -> str:
         return self._apply(spec)
 
     def _get_container_image_info(self, image_name) -> ContainerInspectInfo:

@@ -8,14 +8,13 @@ from ceph.deployment.drive_selection import DriveSelection
 
 from datetime import datetime
 import orchestrator
-from cephadm.utils import forall_hosts
+from cephadm.utils import forall_hosts, datetime_to_str, str_to_datetime
 from orchestrator import OrchestratorError
 from mgr_module import MonCommandFailed
 
 from cephadm.services.cephadmservice import CephadmDaemonSpec, CephService
 
 logger = logging.getLogger(__name__)
-DATEFMT = '%Y-%m-%dT%H:%M:%S.%f'
 
 
 class OSDService(CephService):
@@ -107,7 +106,8 @@ class OSDService(CephService):
 
     def prepare_drivegroup(self, drive_group: DriveGroupSpec) -> List[Tuple[str, DriveSelection]]:
         # 1) use fn_filter to determine matching_hosts
-        matching_hosts = drive_group.placement.filter_matching_hosts(self.mgr._get_hosts)
+        matching_hosts = drive_group.placement.filter_matching_hostspecs(
+            self.mgr.inventory.all_specs())
         # 2) Map the inventory to the InventoryHost object
         host_ds_map = []
 
@@ -211,7 +211,7 @@ class OSDService(CephService):
         if not osdspecs:
             self.mgr.log.debug("No OSDSpecs found")
             return []
-        return sum([spec.placement.filter_matching_hosts(self.mgr._get_hosts) for spec in osdspecs], [])
+        return sum([spec.placement.filter_matching_hostspecs(self.mgr.inventory.all_specs()) for spec in osdspecs], [])
 
     def resolve_osdspecs_for_host(self, host: str, specs: Optional[List[DriveGroupSpec]] = None):
         matching_specs = []
@@ -220,7 +220,7 @@ class OSDService(CephService):
             specs = [cast(DriveGroupSpec, spec) for (sn, spec) in self.mgr.spec_store.spec_preview.items()
                      if spec.service_type == 'osd']
         for spec in specs:
-            if host in spec.placement.filter_matching_hosts(self.mgr._get_hosts):
+            if host in spec.placement.filter_matching_hostspecs(self.mgr.inventory.all_specs()):
                 self.mgr.log.debug(f"Found OSDSpecs for host: <{host}> -> <{spec}>")
                 matching_specs.append(spec)
         return matching_specs
@@ -236,13 +236,8 @@ class OSDService(CephService):
             'entity': 'client.bootstrap-osd',
         })
 
-        # generate config
-        ret, config, err = self.mgr.check_mon_command({
-            "prefix": "config generate-minimal-conf",
-        })
-
         j = json.dumps({
-            'config': config,
+            'config': self.mgr.get_minimal_ceph_conf(),
             'keyring': keyring,
         })
 
@@ -614,7 +609,7 @@ class OSD:
         return 'n/a' if self.get_pg_count() < 0 else str(self.get_pg_count())
 
     def to_json(self) -> dict:
-        out = dict()
+        out: Dict[str, Any] = dict()
         out['osd_id'] = self.osd_id
         out['started'] = self.started
         out['draining'] = self.draining
@@ -625,7 +620,7 @@ class OSD:
 
         for k in ['drain_started_at', 'drain_stopped_at', 'drain_done_at', 'process_started_at']:
             if getattr(self, k):
-                out[k] = getattr(self, k).strftime(DATEFMT)
+                out[k] = datetime_to_str(getattr(self, k))
             else:
                 out[k] = getattr(self, k)
         return out
@@ -636,7 +631,7 @@ class OSD:
             return None
         for date_field in ['drain_started_at', 'drain_stopped_at', 'drain_done_at', 'process_started_at']:
             if inp.get(date_field):
-                inp.update({date_field: datetime.strptime(inp.get(date_field, ''), DATEFMT)})
+                inp.update({date_field: str_to_datetime(inp.get(date_field, ''))})
         inp.update({'remove_util': ctx})
         if 'nodename' in inp:
             hostname = inp.pop('nodename')

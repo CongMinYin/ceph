@@ -56,6 +56,7 @@ struct MonSession : public RefCountedObject {
   xlist<MonSession*>::item item;
   std::set<uint64_t> routed_request_tids;
   MonCap caps;
+  bool validated_stretch_connection = false;
 
   bool authenticated = false;  ///< true if auth handshake is complete
 
@@ -111,7 +112,7 @@ struct MonSession : public RefCountedObject {
   }
 
   bool fs_name_capable(string_view fsname, __u8 mask) {
-    return caps.fs_name_capable(fsname, mask);
+    return caps.fs_name_capable(entity_name, fsname, mask);
   }
 
   const entity_addr_t& get_peer_socket_addr() {

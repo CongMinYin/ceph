@@ -16,7 +16,7 @@ except ImportError:
 from execnet.gateway_bootstrap import HostNotFound
 
 from ceph.deployment.service_spec import ServiceSpec, PlacementSpec, RGWSpec, \
-    NFSServiceSpec, IscsiServiceSpec, HostPlacementSpec
+    NFSServiceSpec, IscsiServiceSpec, HostPlacementSpec, CustomContainerSpec
 from ceph.deployment.drive_selection.selector import DriveSelection
 from ceph.deployment.inventory import Devices, Device
 from orchestrator import ServiceDescription, DaemonDescription, InventoryHost, \
@@ -249,6 +249,42 @@ class TestCephadm(object):
                 cephadm_module._check_daemons()
 
                 assert cephadm_module.cache.get_scheduled_daemon_action('test', daemon_name) is None
+
+    @mock.patch("cephadm.module.CephadmOrchestrator._run_cephadm")
+    def test_daemon_check_extra_config(self, _run_cephadm, cephadm_module: CephadmOrchestrator):
+        _run_cephadm.return_value = ('{}', '', 0)
+
+        with with_host(cephadm_module, 'test'):
+
+            # Also testing deploying mons without explicit network placement
+            cephadm_module.check_mon_command({
+                'prefix': 'config set',
+                'who': 'mon',
+                'name': 'public_network',
+                'value': '127.0.0.0/8'
+            })
+
+            cephadm_module.cache.update_host_devices_networks(
+                'test',
+                [],
+                {
+                    "127.0.0.0/8": [
+                        "127.0.0.1"
+                    ],
+                }
+            )
+
+            with with_service(cephadm_module, ServiceSpec(service_type='mon'), CephadmOrchestrator.apply_mon, 'test') as d_names:
+                [daemon_name] = d_names
+
+                cephadm_module._set_extra_ceph_conf('[mon]\nk=v')
+
+                cephadm_module._check_daemons()
+
+                _run_cephadm.assert_called_with('test', 'mon.test', 'deploy', [
+                                                '--name', 'mon.test', '--reconfig', '--config-json', '-'],
+                                                stdin='{"config": "\\n\\n[mon]\\nk=v\\n", "keyring": ""}',
+                                                image='')
 
     @mock.patch("cephadm.module.CephadmOrchestrator._run_cephadm", _run_cephadm('{}'))
     def test_daemon_check_post(self, cephadm_module: CephadmOrchestrator):
@@ -658,6 +694,28 @@ class TestCephadm(object):
                 api_user='user',
                 api_password='password'
             ), CephadmOrchestrator.apply_iscsi),
+            (CustomContainerSpec(
+                service_id='hello-world',
+                image='docker.io/library/hello-world:latest',
+                uid=65534,
+                gid=65534,
+                dirs=['foo/bar'],
+                files={
+                    'foo/bar/xyz.conf': 'aaa\nbbb'
+                },
+                bind_mounts=[[
+                    'type=bind',
+                    'source=lib/modules',
+                    'destination=/lib/modules',
+                    'ro=true'
+                ]],
+                volume_mounts={
+                    'foo/bar': '/foo/bar:Z'
+                },
+                args=['--no-healthcheck'],
+                envs=['SECRET=password'],
+                ports=[8080, 8443]
+            ), CephadmOrchestrator.apply_container),
         ]
     )
     @mock.patch("cephadm.module.CephadmOrchestrator._run_cephadm", _run_cephadm('{}'))
@@ -747,7 +805,7 @@ class TestCephadm(object):
             return '{}', None, 0
         with mock.patch("remoto.Connection", side_effect=[Connection(), Connection(), Connection()]):
             with mock.patch("remoto.process.check", _check):
-                with with_host(cephadm_module, 'test'):
+                with with_host(cephadm_module, 'test', refresh_hosts=False):
                     code, out, err = cephadm_module.check_host('test')
                     # First should succeed.
                     assert err is None
@@ -779,6 +837,13 @@ class TestCephadm(object):
 
             assert not cephadm_module.cache.host_needs_new_etc_ceph_ceph_conf('test')
 
+            # set extra config and expect that we deploy another ceph.conf
+            cephadm_module._set_extra_ceph_conf('[mon]\nk=v')
+            cephadm_module._refresh_hosts_and_daemons()
+            _check.assert_called_with(
+                ANY, ['dd', 'of=/etc/ceph/ceph.conf'], stdin=b'\n\n[mon]\nk=v\n')
+
+            # reload
             cephadm_module.cache.last_etc_ceph_ceph_conf = {}
             cephadm_module.cache.load()
 
@@ -856,7 +921,7 @@ class TestCephadm(object):
                                  True
                              ])
     def test_upgrade_run(self, use_repo_digest, cephadm_module: CephadmOrchestrator):
-        with with_host(cephadm_module, 'test'):
+        with with_host(cephadm_module, 'test', refresh_hosts=False):
             cephadm_module.set_container_image('global', 'image')
             if use_repo_digest:
                 cephadm_module.use_repo_digest = True

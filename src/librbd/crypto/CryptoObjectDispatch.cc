@@ -37,7 +37,7 @@ struct C_EncryptedObjectReadRequest : public Context {
 
     C_EncryptedObjectReadRequest(
             I* image_ctx, CryptoInterface* crypto, uint64_t object_no,
-            uint64_t object_off, uint64_t object_len, librados::snap_t snap_id,
+            uint64_t object_off, uint64_t object_len, IOContext io_context,
             int op_flags, const ZTracer::Trace &parent_trace,
             ceph::bufferlist* read_data, int* object_dispatch_flags,
             Context** on_finish,
@@ -61,7 +61,7 @@ struct C_EncryptedObjectReadRequest : public Context {
 
       req = io::ObjectDispatchSpec::create_read(
               image_ctx, io::OBJECT_DISPATCH_LAYER_CRYPTO, object_no,
-              {{object_off, object_len}}, snap_id, op_flags, parent_trace,
+              {{object_off, object_len}}, io_context, op_flags, parent_trace,
               &req_comp->bl, &req_comp->extent_map, nullptr, req_comp);
     }
 
@@ -72,11 +72,15 @@ struct C_EncryptedObjectReadRequest : public Context {
     void finish(int r) override {
       ldout(image_ctx->cct, 20) << "r=" << r << dendl;
       if (r > 0) {
-        crypto->decrypt(
-                std::move(*read_data),
+        auto crypto_ret = crypto->decrypt(
+                read_data,
                 Striper::get_file_offset(
                         image_ctx->cct, &image_ctx->layout, object_no,
                         object_off));
+        if (crypto_ret != 0) {
+          ceph_assert(crypto_ret < 0);
+          r = crypto_ret;
+        }
       }
       onfinish->complete(r);
     }
@@ -112,7 +116,7 @@ void CryptoObjectDispatch<I>::shut_down(Context* on_finish) {
 template <typename I>
 bool CryptoObjectDispatch<I>::read(
     uint64_t object_no, const io::Extents &extents,
-    librados::snap_t snap_id, int op_flags, const ZTracer::Trace &parent_trace,
+    IOContext io_context, int op_flags, const ZTracer::Trace &parent_trace,
     ceph::bufferlist* read_data, io::Extents* extent_map, uint64_t* version,
     int* object_dispatch_flags, io::DispatchResult* dispatch_result,
     Context** on_finish, Context* on_dispatched) {
@@ -131,7 +135,7 @@ bool CryptoObjectDispatch<I>::read(
 
   *dispatch_result = io::DISPATCH_RESULT_COMPLETE;
   auto req = new C_EncryptedObjectReadRequest<I>(
-          m_image_ctx, m_crypto, object_no, object_off, object_len, snap_id,
+          m_image_ctx, m_crypto, object_no, object_off, object_len, io_context,
           op_flags, parent_trace, read_data, object_dispatch_flags, on_finish,
           on_dispatched);
   req->send();
@@ -141,7 +145,7 @@ bool CryptoObjectDispatch<I>::read(
 template <typename I>
 bool CryptoObjectDispatch<I>::write(
     uint64_t object_no, uint64_t object_off, ceph::bufferlist&& data,
-    const ::SnapContext &snapc, int op_flags, int write_flags,
+    IOContext io_context, int op_flags, int write_flags,
     std::optional<uint64_t> assert_version,
     const ZTracer::Trace &parent_trace, int* object_dispatch_flags,
     uint64_t* journal_tid, io::DispatchResult* dispatch_result,
@@ -151,13 +155,13 @@ bool CryptoObjectDispatch<I>::write(
                  << object_off << "~" << data.length() << dendl;
   ceph_assert(m_crypto != nullptr);
 
-  m_crypto->encrypt(
-          std::move(data),
+  auto r = m_crypto->encrypt(
+          &data,
           Striper::get_file_offset(
                   m_image_ctx->cct, &m_image_ctx->layout, object_no,
                   object_off));
   *dispatch_result = io::DISPATCH_RESULT_CONTINUE;
-  on_dispatched->complete(0);
+  on_dispatched->complete(r);
   return true;
 }
 
@@ -165,7 +169,7 @@ template <typename I>
 bool CryptoObjectDispatch<I>::write_same(
     uint64_t object_no, uint64_t object_off, uint64_t object_len,
     io::LightweightBufferExtents&& buffer_extents, ceph::bufferlist&& data,
-    const ::SnapContext &snapc, int op_flags,
+    IOContext io_context, int op_flags,
     const ZTracer::Trace &parent_trace, int* object_dispatch_flags,
     uint64_t* journal_tid, io::DispatchResult* dispatch_result,
     Context** on_finish, Context* on_dispatched) {
@@ -189,8 +193,8 @@ bool CryptoObjectDispatch<I>::write_same(
   *dispatch_result = io::DISPATCH_RESULT_COMPLETE;
   auto req = io::ObjectDispatchSpec::create_write(
           m_image_ctx, io::OBJECT_DISPATCH_LAYER_NONE, object_no,
-          object_off, std::move(ws_data), snapc, op_flags, 0, std::nullopt, 0,
-          parent_trace, ctx);
+          object_off, std::move(ws_data), io_context, op_flags, 0, std::nullopt,
+          0, parent_trace, ctx);
   req->send();
   return true;
 }
@@ -198,7 +202,7 @@ bool CryptoObjectDispatch<I>::write_same(
 template <typename I>
 bool CryptoObjectDispatch<I>::compare_and_write(
     uint64_t object_no, uint64_t object_off, ceph::bufferlist&& cmp_data,
-    ceph::bufferlist&& write_data, const ::SnapContext &snapc, int op_flags,
+    ceph::bufferlist&& write_data, IOContext io_context, int op_flags,
     const ZTracer::Trace &parent_trace, uint64_t* mismatch_offset,
     int* object_dispatch_flags, uint64_t* journal_tid,
     io::DispatchResult* dispatch_result, Context** on_finish,
@@ -211,17 +215,19 @@ bool CryptoObjectDispatch<I>::compare_and_write(
 
   uint64_t image_offset = Striper::get_file_offset(
           m_image_ctx->cct, &m_image_ctx->layout, object_no, object_off);
-  m_crypto->encrypt(std::move(cmp_data), image_offset);
-  m_crypto->encrypt(std::move(write_data), image_offset);
+  auto r = m_crypto->encrypt(&cmp_data, image_offset);
+  if (r == 0) {
+    r = m_crypto->encrypt(&write_data, image_offset);
+  }
   *dispatch_result = io::DISPATCH_RESULT_CONTINUE;
-  on_dispatched->complete(0);
+  on_dispatched->complete(r);
   return true;
 }
 
 template <typename I>
 bool CryptoObjectDispatch<I>::discard(
         uint64_t object_no, uint64_t object_off, uint64_t object_len,
-        const ::SnapContext &snapc, int discard_flags,
+        IOContext io_context, int discard_flags,
         const ZTracer::Trace &parent_trace, int* object_dispatch_flags,
         uint64_t* journal_tid, io::DispatchResult* dispatch_result,
         Context** on_finish, Context* on_dispatched) {
@@ -243,7 +249,7 @@ bool CryptoObjectDispatch<I>::discard(
   *dispatch_result = io::DISPATCH_RESULT_COMPLETE;
   auto req = io::ObjectDispatchSpec::create_write_same(
           m_image_ctx, io::OBJECT_DISPATCH_LAYER_NONE, object_no, object_off,
-          object_len, {{0, buffer_size}}, std::move(bl), snapc,
+          object_len, {{0, buffer_size}}, std::move(bl), io_context,
           *object_dispatch_flags, 0, parent_trace, ctx);
   req->send();
   return true;
