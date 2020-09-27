@@ -6568,7 +6568,7 @@ int Client::_lookup(Inode *dir, const string& dname, int mask, InodeRef *target,
   int r = 0;
   Dentry *dn = NULL;
   // can only request shared caps
-  mask &= CEPH_CAP_ANY_SHARED;
+  mask &= CEPH_CAP_ANY_SHARED | CEPH_STAT_RSTAT;
 
   if (dname == "..") {
     if (dir->dentries.empty()) {
@@ -13684,8 +13684,6 @@ int Client::ll_read_block(Inode *in, uint64_t blockid,
   C_SaferCond onfinish;
   bufferlist bl;
 
-  std::scoped_lock lock(client_lock);
-
   objecter->read(oid,
 		 object_locator_t(layout->pool_id),
 		 offset,
@@ -13695,10 +13693,7 @@ int Client::ll_read_block(Inode *in, uint64_t blockid,
 		 CEPH_OSD_FLAG_READ,
                  &onfinish);
 
-  client_lock.unlock();
   int r = onfinish.wait();
-  client_lock.lock();
-
   if (r >= 0) {
       bl.begin().copy(bl.length(), buf);
       r = bl.length();
@@ -13744,7 +13739,6 @@ int Client::ll_write_block(Inode *in, uint64_t blockid,
   fakesnap.seq = snapseq;
 
   /* lock just in time */
-  client_lock.lock();
   objecter->write(oid,
 		  object_locator_t(layout->pool_id),
 		  offset,
@@ -13755,7 +13749,6 @@ int Client::ll_write_block(Inode *in, uint64_t blockid,
 		  0,
 		  onsafe.get());
 
-  client_lock.unlock();
   if (nullptr != onsafe) {
     r = onsafe->wait();
   }
