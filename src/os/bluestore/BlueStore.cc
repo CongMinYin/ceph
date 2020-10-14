@@ -694,16 +694,14 @@ private:
   ghobject_t m_oid;
 
   void get_oid() {
+    m_oid = ghobject_t();
+    while (m_it->valid() && is_extent_shard_key(m_it->key())) {
+      m_it->next();
+    }
     if (!valid()) {
       return;
     }
 
-    if (is_extent_shard_key(m_it->key())) {
-      next();
-      return;
-    }
-
-    m_oid = ghobject_t();
     int r = get_key_object(m_it->key(), &m_oid);
     ceph_assert(r == 0);
   }
@@ -1213,7 +1211,6 @@ struct TwoQBufferCacheShard : public BlueStore::BufferCacheShard {
   list_t hot;      ///< "Am" hot buffers
   list_t warm_in;  ///< "A1in" newly warm buffers
   list_t warm_out; ///< "A1out" empty buffers we've evicted
-  uint64_t buffer_bytes = 0;     ///< bytes
 
   enum {
     BUFFER_NEW = 0,
@@ -3507,7 +3504,7 @@ BlueStore::Onode* BlueStore::Onode::decode(
   auto p = v.front().begin_deep();
   on->onode.decode(p);
   for (auto& i : on->onode.attrs) {
-    i.second.reassign_to_mempool(mempool::mempool_bluestore_cache_data);
+    i.second.reassign_to_mempool(mempool::mempool_bluestore_cache_meta);
   }
 
   // initialize extent_map
@@ -14404,10 +14401,10 @@ int BlueStore::_setattr(TransContext *txc,
   if (val.is_partial()) {
     auto& b = o->onode.attrs[name.c_str()] = bufferptr(val.c_str(),
 						       val.length());
-    b.reassign_to_mempool(mempool::mempool_bluestore_cache_data);
+    b.reassign_to_mempool(mempool::mempool_bluestore_cache_meta);
   } else {
     auto& b = o->onode.attrs[name.c_str()] = val;
-    b.reassign_to_mempool(mempool::mempool_bluestore_cache_data);
+    b.reassign_to_mempool(mempool::mempool_bluestore_cache_meta);
   }
   txc->write_onode(o);
   dout(10) << __func__ << " " << c->cid << " " << o->oid
@@ -14430,10 +14427,10 @@ int BlueStore::_setattrs(TransContext *txc,
     if (p->second.is_partial()) {
       auto& b = o->onode.attrs[p->first.c_str()] =
 	bufferptr(p->second.c_str(), p->second.length());
-      b.reassign_to_mempool(mempool::mempool_bluestore_cache_data);
+      b.reassign_to_mempool(mempool::mempool_bluestore_cache_meta);
     } else {
       auto& b = o->onode.attrs[p->first.c_str()] = p->second;
-      b.reassign_to_mempool(mempool::mempool_bluestore_cache_data);
+      b.reassign_to_mempool(mempool::mempool_bluestore_cache_meta);
     }
   }
   txc->write_onode(o);

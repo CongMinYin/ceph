@@ -34,11 +34,11 @@ struct ObjectDispatchInterface {
   virtual void shut_down(Context* on_finish) = 0;
 
   virtual bool read(
-      uint64_t object_no, const Extents &extents,
-      IOContext io_context, int op_flags, const ZTracer::Trace &parent_trace,
-      ceph::bufferlist* read_data, Extents* extent_map, uint64_t* version,
-      int* object_dispatch_flags, DispatchResult* dispatch_result,
-      Context** on_finish, Context* on_dispatched) = 0;
+      uint64_t object_no, ReadExtents* extents, IOContext io_context,
+      int op_flags, int read_flags, const ZTracer::Trace &parent_trace,
+      uint64_t* version, int* object_dispatch_flags,
+      DispatchResult* dispatch_result, Context** on_finish,
+      Context* on_dispatched) = 0;
 
   virtual bool discard(
       uint64_t object_no, uint64_t object_off, uint64_t object_len,
@@ -75,6 +75,13 @@ struct ObjectDispatchInterface {
       FlushSource flush_source, const ZTracer::Trace &parent_trace,
       uint64_t* journal_tid, DispatchResult* dispatch_result,
       Context** on_finish, Context* on_dispatched) = 0;
+
+  virtual bool list_snaps(
+      uint64_t object_no, Extents&& extents, SnapIds&& snap_ids,
+      int list_snap_flags, const ZTracer::Trace &parent_trace,
+      SnapshotDelta* snapshot_delta, int* object_dispatch_flags,
+      DispatchResult* dispatch_result, Context** on_finish,
+      Context* on_dispatched) = 0;
 
   virtual bool invalidate_cache(Context* on_finish) = 0;
   virtual bool reset_existence_cache(Context* on_finish) = 0;

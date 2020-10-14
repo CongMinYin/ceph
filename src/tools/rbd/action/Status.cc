@@ -24,9 +24,9 @@ namespace {
 const std::string IMAGE_CACHE_STATE = ".librbd/image_cache_state";
 
 struct ImageCacheState {
-  bool present;
-  bool clean;
-  int size;
+  bool present = false;
+  bool clean = false;
+  int size = 0;
   std::string host;
   std::string path;
 };
@@ -43,14 +43,14 @@ bool image_cache_parse(const std::string& s, ImageCacheState &cache_state) {
     if (success && (success = f.exists("clean"))) {
       cache_state.present = (bool)f["clean"];
     }
-    if (success && (success = f.exists("rwl_size"))) {
-      cache_state.size = (int)f["rwl_size"];
+    if (success && (success = f.exists("pwl_size"))) {
+      cache_state.size = (int)f["pwl_size"];
     }
-    if (success && (success = f.exists("rwl_host"))) {
-      cache_state.host = (std::string)f["rwl_host"];
+    if (success && (success = f.exists("pwl_host"))) {
+      cache_state.host = (std::string)f["pwl_host"];
     }
-    if (success && (success = f.exists("rwl_path"))) {
-      cache_state.path = (std::string)f["rwl_path"];
+    if (success && (success = f.exists("pwl_path"))) {
+      cache_state.path = (std::string)f["pwl_path"];
     }
   }
   return success;
@@ -174,12 +174,12 @@ static int do_show_status(librados::IoCtx& io_ctx, const std::string &image_name
       f->close_section(); // migration
     }
     if (cache_state.present) {
-        f->open_object_section("image_cache_state");
-        f->dump_bool("clean", cache_state.clean);
-        f->dump_int("size", cache_state.size);
-        f->dump_string("host", cache_state.host);
-        f->dump_string("path", cache_state.path);
-	f->close_section(); // image_cache_state
+      f->open_object_section("image_cache_state");
+      f->dump_bool("clean", cache_state.clean);
+      f->dump_int("size", cache_state.size);
+      f->dump_string("host", cache_state.host);
+      f->dump_string("path", cache_state.path);
+      f->close_section(); // image_cache_state
     }
   } else {
     if (watchers.size()) {
@@ -201,7 +201,7 @@ static int do_show_status(librados::IoCtx& io_ctx, const std::string &image_name
 
       std::cout << "Migration:" << std::endl;
       std::cout << "\tsource: " << source_pool_name << "/"
-              << migration_status.source_image_name;
+                << migration_status.source_image_name;
       if (!migration_status.source_image_id.empty()) {
         std::cout << " (" << migration_status.source_image_id <<  ")";
       }
@@ -217,11 +217,12 @@ static int do_show_status(librados::IoCtx& io_ctx, const std::string &image_name
     }
 
     if (cache_state.present) {
-        std::cout << "image cache state:" << std::endl;
+        std::cout << "Image cache state:" << std::endl;
         std::cout << "\tclean: " << (cache_state.clean ? "true" : "false")
-                  << "  size: " << byte_u_t(cache_state.size)
-                  << "  host: " << cache_state.host
-                  << "  path: "  << cache_state.path << std::endl;
+                  << std::endl
+                  << "\tsize: " << byte_u_t(cache_state.size) << std::endl
+                  << "\thost: " << cache_state.host << std::endl
+                  << "\tpath: " << cache_state.path << std::endl;
     }
   }
 

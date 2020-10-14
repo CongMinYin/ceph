@@ -106,7 +106,7 @@ template <typename I>
 bool ImageDispatch<I>::read(
     io::AioCompletion* aio_comp, io::Extents &&image_extents,
     io::ReadResult &&read_result, IOContext io_context, int op_flags,
-    const ZTracer::Trace &parent_trace, uint64_t tid,
+    int read_flags, const ZTracer::Trace &parent_trace, uint64_t tid,
     std::atomic<uint32_t>* image_dispatch_flags,
     io::DispatchResult* dispatch_result, Context** on_finish,
     Context* on_dispatched) {
@@ -290,7 +290,9 @@ void ImageDispatch<I>::handle_acquire_lock(int r) {
 
   Context* failed_dispatch = nullptr;
   Contexts on_dispatches;
-  if (r < 0) {
+  if (r == -ESHUTDOWN) {
+    ldout(cct, 5) << "IO raced with exclusive lock shutdown" << dendl;
+  } else if (r < 0) {
     lderr(cct) << "failed to acquire exclusive lock: " << cpp_strerror(r)
                << dendl;
     failed_dispatch = m_on_dispatches.front();

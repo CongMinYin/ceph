@@ -1,20 +1,19 @@
 # -*- coding: utf-8 -*-
 from __future__ import absolute_import
 
-from datetime import datetime
-
 import time
+from datetime import datetime
 
 import cherrypy
 
-from . import BaseController, ApiController, RESTController, Endpoint, \
-    allow_empty_body, ControllerDoc, EndpointDoc
 from .. import mgr
-from ..exceptions import DashboardException, UserAlreadyExists, \
-    UserDoesNotExist, PasswordPolicyException, PwdExpirationDateNotValid
+from ..exceptions import DashboardException, PasswordPolicyException, \
+    PwdExpirationDateNotValid, UserAlreadyExists, UserDoesNotExist
 from ..security import Scope
 from ..services.access_control import SYSTEM_ROLES, PasswordPolicy
 from ..services.auth import JwtManager
+from . import ApiController, BaseController, ControllerDoc, Endpoint, \
+    EndpointDoc, RESTController, allow_empty_body
 
 USER_SCHEMA = ([{
     "username": (str, 'Username of the user'),
@@ -168,9 +167,9 @@ class UserPasswordPolicy(RESTController):
         :param password: The password to validate.
         :param username: The name of the user (optional).
         :param old_password: The old password (optional).
-        :return: An object with the properties valid, credits and valuation.
-          'credits' contains the password complexity credits and
-          'valuation' the textual summary of the validation.
+        :return: An object with properties valid, credits and valuation.
+        'credits' contains the password complexity credits and
+        'valuation' the textual summary of the validation.
         """
         result = {'valid': False, 'credits': 0, 'valuation': None}
         try:

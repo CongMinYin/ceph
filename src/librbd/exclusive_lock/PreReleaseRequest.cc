@@ -84,6 +84,12 @@ void PreReleaseRequest<I>::handle_cancel_op_requests(int r) {
 
 template <typename I>
 void PreReleaseRequest<I>::send_set_require_lock() {
+  if (!m_image_ctx.test_features(RBD_FEATURE_EXCLUSIVE_LOCK)) {
+    // exclusive-lock was disabled, no need to block IOs
+    send_wait_for_ops();
+    return;
+  }
+
   CephContext *cct = m_image_ctx.cct;
   ldout(cct, 10) << dendl;
 
@@ -163,18 +169,12 @@ void PreReleaseRequest<I>::send_shut_down_image_cache() {
   CephContext *cct = m_image_ctx.cct;
   ldout(cct, 10) << dendl;
 
-  /* Shut down existing image cache whether the feature bit is on or not */
-  if (!m_image_ctx.image_cache) {
-     send_invalidate_cache();
-    return;
-  }
   std::shared_lock owner_lock{m_image_ctx.owner_lock};
   Context *ctx = create_async_context_callback(m_image_ctx, create_context_callback<
       PreReleaseRequest<I>,
       &PreReleaseRequest<I>::handle_shut_down_image_cache>(this));
-  cache::pwl::ShutdownRequest<I> *req = cache::pwl::ShutdownRequest<I>::create(
-    m_image_ctx, ctx);
-  req->send();
+  m_image_ctx.io_image_dispatcher->shut_down_dispatch(
+    io::IMAGE_DISPATCH_LAYER_WRITEBACK_CACHE, ctx);
 }
 
 template <typename I>

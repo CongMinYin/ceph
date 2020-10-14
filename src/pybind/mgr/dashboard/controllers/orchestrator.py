@@ -1,18 +1,18 @@
 # -*- coding: utf-8 -*-
 from __future__ import absolute_import
-import os.path
 
+import os.path
 import time
 from functools import wraps
 
-from . import ApiController, Endpoint, ReadPermission, UpdatePermission, ControllerDoc, EndpointDoc
-from . import RESTController, Task
 from .. import mgr
 from ..exceptions import DashboardException
 from ..security import Scope
 from ..services.exception import handle_orchestrator_error
 from ..services.orchestrator import OrchClient, OrchFeature
 from ..tools import TaskManager, str_to_bool
+from . import ApiController, ControllerDoc, Endpoint, EndpointDoc, \
+    ReadPermission, RESTController, Task, UpdatePermission
 
 STATUS_SCHEMA = {
     "available": (bool, "Orchestrator status"),
@@ -103,7 +103,7 @@ class Orchestrator(RESTController):
         Identify a device by switching on the device light for N seconds.
         :param hostname: The hostname of the device to process.
         :param device: The device identifier to process, e.g. ``/dev/dm-0`` or
-          ``ABC1234DEF567-1R1234_ABC8DE0Q``.
+        ``ABC1234DEF567-1R1234_ABC8DE0Q``.
         :param duration: The duration in seconds how long the LED should flash.
         """
         orch = OrchClient.instance()

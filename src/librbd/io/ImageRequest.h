@@ -35,7 +35,7 @@ public:
 
   static void aio_read(ImageCtxT *ictx, AioCompletion *c,
                        Extents &&image_extents, ReadResult &&read_result,
-                       IOContext io_context, int op_flags,
+                       IOContext io_context, int op_flags, int read_flags,
                        const ZTracer::Trace &parent_trace);
   static void aio_write(ImageCtxT *ictx, AioCompletion *c,
                         Extents &&image_extents, bufferlist &&bl,
@@ -63,10 +63,6 @@ public:
 
   void send();
 
-  void set_bypass_image_cache() {
-    m_bypass_image_cache = true;
-  }
-
   inline const ZTracer::Trace &get_trace() const {
     return m_trace;
   }
@@ -79,7 +75,6 @@ protected:
   Extents m_image_extents;
   IOContext m_io_context;
   ZTracer::Trace m_trace;
-  bool m_bypass_image_cache = false;
 
   ImageRequest(ImageCtxT &image_ctx, AioCompletion *aio_comp,
                Extents &&image_extents, IOContext io_context,
@@ -91,15 +86,8 @@ protected:
     m_trace.event("start");
   }
 
-  uint64_t get_total_length() const;
-
-  virtual bool finish_request_early() {
-    return false;
-  }
-  virtual int clip_request();
   virtual void update_timestamp();
   virtual void send_request() = 0;
-  virtual void send_image_cache_request() = 0;
 
   virtual aio_type_t get_aio_type() const = 0;
   virtual const char *get_request_type() const = 0;
@@ -112,15 +100,11 @@ public:
 
   ImageReadRequest(ImageCtxT &image_ctx, AioCompletion *aio_comp,
                    Extents &&image_extents, ReadResult &&read_result,
-                   IOContext io_context, int op_flags,
+                   IOContext io_context, int op_flags, int read_flags,
                    const ZTracer::Trace &parent_trace);
 
 protected:
-  int clip_request() override;
-  bool finish_request_early() override;
-
   void send_request() override;
-  void send_image_cache_request() override;
 
   aio_type_t get_aio_type() const override {
     return AIO_TYPE_READ;
@@ -130,6 +114,7 @@ protected:
   }
 private:
   int m_op_flags;
+  int m_read_flags;
 };
 
 template <typename ImageCtxT = ImageCtx>
@@ -153,7 +138,6 @@ protected:
   }
 
   void send_request() override;
-  bool finish_request_early() override;
 
   virtual int prune_object_extents(
       LightweightObjectExtents* object_extents) const {
@@ -201,9 +185,6 @@ protected:
   void assemble_extent(const LightweightObjectExtent &object_extent,
                        bufferlist *bl);
 
-  void send_image_cache_request() override;
-
-
   ObjectDispatchSpec *create_object_request(
       const LightweightObjectExtent &object_extent, IOContext io_context,
       uint64_t journal_tid, bool single_extent, Context *on_finish) override;
@@ -239,8 +220,6 @@ protected:
     return "aio_discard";
   }
 
-  void send_image_cache_request() override;
-
   ObjectDispatchSpec *create_object_request(
       const LightweightObjectExtent &object_extent, IOContext io_context,
       uint64_t journal_tid, bool single_extent, Context *on_finish) override;
@@ -269,13 +248,9 @@ public:
 protected:
   using typename ImageRequest<ImageCtxT>::ObjectRequests;
 
-  int clip_request() override {
-    return 0;
-  }
   void update_timestamp() override {
   }
   void send_request() override;
-  void send_image_cache_request() override;
 
   aio_type_t get_aio_type() const override {
     return AIO_TYPE_FLUSH;
@@ -312,8 +287,6 @@ protected:
     return "aio_writesame";
   }
 
-  void send_image_cache_request() override;
-
   ObjectDispatchSpec *create_object_request(
       const LightweightObjectExtent &object_extent, IOContext io_context,
       uint64_t journal_tid, bool single_extent, Context *on_finish) override;
@@ -343,8 +316,6 @@ public:
   }
 
 protected:
-  void send_image_cache_request() override;
-
   void assemble_extent(const LightweightObjectExtent &object_extent,
                        bufferlist *bl);
 
@@ -372,6 +343,33 @@ private:
   int m_op_flags;
 };
 
+template <typename ImageCtxT = ImageCtx>
+class ImageListSnapsRequest : public ImageRequest<ImageCtxT> {
+public:
+  using typename ImageRequest<ImageCtxT>::Extents;
+
+  ImageListSnapsRequest(
+      ImageCtxT& image_ctx, AioCompletion* aio_comp,
+      Extents&& image_extents, SnapIds&& snap_ids, int list_snaps_flags,
+      SnapshotDelta* snapshot_delta, const ZTracer::Trace& parent_trace);
+
+protected:
+  void update_timestamp() override {}
+  void send_request() override;
+
+  aio_type_t get_aio_type() const override {
+    return AIO_TYPE_GENERIC;
+  }
+  const char *get_request_type() const override {
+    return "list-snaps";
+  }
+
+private:
+  SnapIds m_snap_ids;
+  int m_list_snaps_flags;
+  SnapshotDelta* m_snapshot_delta;
+};
+
 } // namespace io
 } // namespace librbd
 
@@ -383,5 +381,6 @@ extern template class librbd::io::ImageDiscardRequest<librbd::ImageCtx>;
 extern template class librbd::io::ImageFlushRequest<librbd::ImageCtx>;
 extern template class librbd::io::ImageWriteSameRequest<librbd::ImageCtx>;
 extern template class librbd::io::ImageCompareAndWriteRequest<librbd::ImageCtx>;
+extern template class librbd::io::ImageListSnapsRequest<librbd::ImageCtx>;
 
 #endif // CEPH_LIBRBD_IO_IMAGE_REQUEST_H

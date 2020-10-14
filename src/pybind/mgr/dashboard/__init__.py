@@ -6,6 +6,7 @@ ceph dashboard module
 from __future__ import absolute_import
 
 import os
+
 import cherrypy
 
 if 'COVERAGE_ENABLED' in os.environ:
@@ -37,6 +38,11 @@ else:
     logging.root.handlers[0].setLevel(logging.DEBUG)
     os.environ['PATH'] = '{}:{}'.format(os.path.abspath('../../../../build/bin'),
                                         os.environ['PATH'])
+    import sys
+
+    # Used to allow the running of a tox-based yml doc generator from the dashboard directory
+    if os.path.abspath(sys.path[0]) == os.getcwd():
+        sys.path.pop(0)
 
     from tests import mock  # type: ignore
 

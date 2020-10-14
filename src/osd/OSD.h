@@ -31,11 +31,6 @@
 #include "mgr/MgrClient.h"
 
 #include "os/ObjectStore.h"
-#include "OSDCap.h"
-
-#include "auth/KeyRing.h"
-
-#include "osd/ClassHandler.h"
 
 #include "include/CompatSet.h"
 #include "include/common_fwd.h"
@@ -54,9 +49,6 @@
 
 #include "common/shared_cache.hpp"
 #include "common/simple_cache.hpp"
-#include "common/sharedptr_registry.hpp"
-#include "common/WeightedPriorityQueue.h"
-#include "common/PrioritizedQueue.h"
 #include "messages/MOSDOp.h"
 #include "common/EventTrace.h"
 #include "osd/osd_perf_counters.h"
@@ -262,8 +254,8 @@ public:
   std::pair<ConnectionRef,ConnectionRef> get_con_osd_hb(int peer, epoch_t from_epoch);  // (back, front)
   void send_message_osd_cluster(int peer, Message *m, epoch_t from_epoch);
   void send_message_osd_cluster(std::vector<std::pair<int, Message*>>& messages, epoch_t from_epoch);
-  void send_message_osd_cluster(Message *m, Connection *con) {
-    con->send_message(m);
+  void send_message_osd_cluster(MessageRef m, Connection *con) {
+    con->send_message2(m);
   }
   void send_message_osd_cluster(Message *m, const ConnectionRef& con) {
     con->send_message(m);

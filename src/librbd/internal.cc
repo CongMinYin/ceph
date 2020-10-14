@@ -1331,7 +1331,7 @@ int validate_pool(IoCtx &io_ctx, CephContext *cct) {
 
       io::ImageReadRequest<> req(*src, comp, {{offset, len}},
 				 io::ReadResult{bl}, src->get_data_io_context(),
-                                 fadvise_flags, std::move(trace));
+                                 fadvise_flags, 0, std::move(trace));
       ctx->read_trace = req.get_trace();
 
       req.send();
@@ -1542,7 +1542,7 @@ int validate_pool(IoCtx &io_ctx, CephContext *cct) {
                                                    io::AIO_TYPE_READ);
       io::ImageRequest<>::aio_read(ictx, c, {{off, read_len}},
                                    io::ReadResult{&bl},
-                                   ictx->get_data_io_context(), 0,
+                                   ictx->get_data_io_context(), 0, 0,
                                    std::move(trace));
 
       int ret = ctx.wait();
@@ -1571,11 +1571,17 @@ int validate_pool(IoCtx &io_ctx, CephContext *cct) {
   int clip_io(ImageCtx *ictx, uint64_t off, uint64_t *len)
   {
     ceph_assert(ceph_mutex_is_locked(ictx->image_lock));
-    uint64_t image_size = ictx->get_image_size(ictx->snap_id);
-    bool snap_exists = ictx->snap_exists;
 
-    if (!snap_exists)
-      return -ENOENT;
+    uint64_t image_size;
+    if (ictx->snap_id == CEPH_NOSNAP) {
+      image_size = ictx->get_image_size(CEPH_NOSNAP);
+    } else {
+      auto snap_info = ictx->get_snap_info(ictx->snap_id);
+      if (snap_info == nullptr) {
+	return -ENOENT;
+      }
+      image_size = snap_info->size;
+    }
 
     // special-case "len == 0" requests: always valid
     if (*len == 0)

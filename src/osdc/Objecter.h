@@ -811,7 +811,7 @@ struct ObjectOperation {
 	      clone.cloneid = std::move(c.cloneid);
 	      clone.snaps.reserve(c.snaps.size());
 	      std::move(c.snaps.begin(), c.snaps.end(),
-			clone.snaps.end());
+			std::back_inserter(clone.snaps));
 	      clone.overlap = c.overlap;
 	      clone.size = c.size;
 	      neosnaps->clones.push_back(std::move(clone));
@@ -1555,6 +1555,10 @@ struct ObjectOperation {
 
   void tier_flush() {
     add_op(CEPH_OSD_OP_TIER_FLUSH);
+  }
+
+  void tier_evict() {
+    add_op(CEPH_OSD_OP_TIER_EVICT);
   }
 
   void set_alloc_hint(uint64_t expected_object_size,

@@ -14,6 +14,7 @@
 #include "librbd/io/QueueImageDispatch.h"
 #include "librbd/io/QosImageDispatch.h"
 #include "librbd/io/RefreshImageDispatch.h"
+#include "librbd/io/Utils.h"
 #include "librbd/io/WriteBlockImageDispatch.h"
 #include <boost/variant.hpp>
 
@@ -41,8 +42,8 @@ struct ImageDispatcher<I>::SendVisitor : public boost::static_visitor<bool> {
       image_dispatch_spec->aio_comp,
       std::move(image_dispatch_spec->image_extents),
       std::move(read.read_result), image_dispatch_spec->io_context,
-      image_dispatch_spec->op_flags, image_dispatch_spec->parent_trace,
-      image_dispatch_spec->tid,
+      image_dispatch_spec->op_flags, read.read_flags,
+      image_dispatch_spec->parent_trace, image_dispatch_spec->tid,
       &image_dispatch_spec->image_dispatch_flags,
       &image_dispatch_spec->dispatch_result,
       &image_dispatch_spec->aio_comp->image_dispatcher_ctx,
@@ -107,6 +108,71 @@ struct ImageDispatcher<I>::SendVisitor : public boost::static_visitor<bool> {
       &image_dispatch_spec->dispatch_result,
       &image_dispatch_spec->aio_comp->image_dispatcher_ctx,
       &image_dispatch_spec->dispatcher_ctx);
+  }
+
+  bool operator()(ImageDispatchSpec::ListSnaps& list_snaps) const {
+    return image_dispatch->list_snaps(
+      image_dispatch_spec->aio_comp,
+      std::move(image_dispatch_spec->image_extents),
+      std::move(list_snaps.snap_ids), list_snaps.list_snaps_flags,
+      list_snaps.snapshot_delta, image_dispatch_spec->parent_trace,
+      image_dispatch_spec->tid, &image_dispatch_spec->image_dispatch_flags,
+      &image_dispatch_spec->dispatch_result,
+      &image_dispatch_spec->aio_comp->image_dispatcher_ctx,
+      &image_dispatch_spec->dispatcher_ctx);
+  }
+};
+
+template <typename I>
+struct ImageDispatcher<I>::PreprocessVisitor
+  : public boost::static_visitor<bool> {
+  ImageDispatcher<I>* image_dispatcher;
+  ImageDispatchSpec* image_dispatch_spec;
+
+  PreprocessVisitor(ImageDispatcher<I>* image_dispatcher,
+                    ImageDispatchSpec* image_dispatch_spec)
+    : image_dispatcher(image_dispatcher),
+      image_dispatch_spec(image_dispatch_spec) {
+  }
+
+  bool clip_request() const {
+    int r = util::clip_request(image_dispatcher->m_image_ctx,
+                               &image_dispatch_spec->image_extents);
+    if (r < 0) {
+      image_dispatch_spec->fail(r);
+      return true;
+    }
+    return false;
+  }
+
+  bool operator()(ImageDispatchSpec::Read& read) const {
+    if ((read.read_flags & READ_FLAG_DISABLE_CLIPPING) != 0) {
+      return false;
+    }
+    return clip_request();
+  }
+
+  bool operator()(ImageDispatchSpec::Flush&) const {
+    return clip_request();
+  }
+
+  bool operator()(ImageDispatchSpec::ListSnaps&) const {
+    return false;
+  }
+
+  template <typename T>
+  bool operator()(T&) const {
+    if (clip_request()) {
+      return true;
+    }
+
+    std::shared_lock image_locker{image_dispatcher->m_image_ctx->image_lock};
+    if (image_dispatcher->m_image_ctx->snap_id != CEPH_NOSNAP ||
+        image_dispatcher->m_image_ctx->read_only) {
+      image_dispatch_spec->fail(-EROFS);
+      return true;
+    }
+    return false;
   }
 };
 
@@ -191,10 +257,23 @@ bool ImageDispatcher<I>::send_dispatch(
     ImageDispatchSpec* image_dispatch_spec) {
   if (image_dispatch_spec->tid == 0) {
     image_dispatch_spec->tid = ++m_next_tid;
+
+    bool finished = preprocess(image_dispatch_spec);
+    if (finished) {
+      return true;
+    }
   }
 
   return boost::apply_visitor(
     SendVisitor{image_dispatch, image_dispatch_spec},
+    image_dispatch_spec->request);
+}
+
+template <typename I>
+bool ImageDispatcher<I>::preprocess(
+    ImageDispatchSpec* image_dispatch_spec) {
+  return boost::apply_visitor(
+    PreprocessVisitor{this, image_dispatch_spec},
     image_dispatch_spec->request);
 }
 

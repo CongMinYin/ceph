@@ -11,18 +11,18 @@ import os
 import pkgutil
 import re
 import sys
-import urllib
-
 from functools import wraps
+from urllib.parse import unquote
 
 # pylint: disable=wrong-import-position
 import cherrypy
 
-from ..security import Scope, Permission
-from ..tools import getargspec, TaskManager, get_request_body_params
-from ..exceptions import ScopeNotValid, PermissionNotValid
-from ..services.auth import AuthManager, JwtManager
+from ..api.doc import SchemaInput, SchemaType
+from ..exceptions import PermissionNotValid, ScopeNotValid
 from ..plugins import PLUGIN_MANAGER
+from ..security import Permission, Scope
+from ..services.auth import AuthManager, JwtManager
+from ..tools import TaskManager, get_request_body_params, getargspec
 
 try:
     from typing import Any, List, Optional
@@ -108,7 +108,12 @@ def EndpointDoc(description="", group="", parameters=None, responses=None):  # n
     resp = {}
     if responses:
         for status_code, response_body in responses.items():
-            resp[str(status_code)] = _split_parameters(response_body)
+            schema_input = SchemaInput()
+            schema_input.type = SchemaType.ARRAY if \
+                isinstance(response_body, list) else SchemaType.OBJECT
+            schema_input.params = _split_parameters(response_body)
+
+            resp[str(status_code)] = schema_input
 
     def _wrapper(func):
         func.doc_info = {
@@ -187,6 +192,11 @@ class UiApiController(Controller):
         super(UiApiController, self).__init__(path, base_url="/ui-api",
                                               security_scope=security_scope,
                                               secure=secure)
+
+    def __call__(self, cls):
+        cls = super(UiApiController, self).__call__(cls)
+        cls._api_endpoint = False
+        return cls
 
 
 def Endpoint(method=None, path=None, path_params=None, query_params=None,  # noqa: N802
@@ -582,7 +592,8 @@ class BaseController(object):
 
         @property
         def is_api(self):
-            return hasattr(self.ctrl, '_api_endpoint')
+            # changed from hasattr to getattr: some ui-based api inherit _api_endpoint
+            return getattr(self.ctrl, '_api_endpoint', False)
 
         @property
         def is_secure(self):
@@ -657,7 +668,7 @@ class BaseController(object):
         def inner(*args, **kwargs):
             for key, value in kwargs.items():
                 if isinstance(value, str):
-                    kwargs[key] = urllib.parse.unquote(value)
+                    kwargs[key] = unquote(value)
 
             # Process method arguments.
             params = get_request_body_params(cherrypy.request)

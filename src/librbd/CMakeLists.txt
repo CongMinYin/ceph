@@ -98,6 +98,7 @@ set(librbd_internal_srcs
   io/ReadResult.cc
   io/RefreshImageDispatch.cc
   io/SimpleSchedulerObjectDispatch.cc
+  io/Types.cc
   io/Utils.cc
   io/WriteBlockImageDispatch.cc
   journal/CreateRequest.cc
@@ -194,6 +195,7 @@ if(WITH_RBD_RWL)
     cache/pwl/Types.cc
     cache/pwl/ReplicatedWriteLog.cc
     cache/pwl/AbstractWriteLog.cc
+    cache/pwl/ImageDispatch.cc
     cache/WriteLogCache.cc)
 endif()
 

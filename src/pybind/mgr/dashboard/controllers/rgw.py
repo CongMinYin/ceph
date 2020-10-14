@@ -1,19 +1,20 @@
 # -*- coding: utf-8 -*-
 from __future__ import absolute_import
 
-import logging
 import json
+import logging
 
 import cherrypy
-from . import ApiController, BaseController, RESTController, Endpoint, \
-    ReadPermission, allow_empty_body, ControllerDoc, EndpointDoc
+
 from ..exceptions import DashboardException
 from ..rest_client import RequestException
-from ..security import Scope, Permission
+from ..security import Permission, Scope
 from ..services.auth import AuthManager, JwtManager
 from ..services.ceph_service import CephService
 from ..services.rgw_client import RgwClient
 from ..tools import json_str_to_object, str_to_bool
+from . import ApiController, BaseController, ControllerDoc, Endpoint, \
+    EndpointDoc, ReadPermission, RESTController, allow_empty_body
 
 try:
     from typing import Any, List
@@ -73,7 +74,7 @@ class Rgw(BaseController):
 @ControllerDoc("RGW Daemon Management API", "RgwDaemon")
 class RgwDaemon(RESTController):
     @EndpointDoc("Display RGW Daemons",
-                 responses={200: RGW_DAEMON_SCHEMA})
+                 responses={200: [RGW_DAEMON_SCHEMA]})
     def list(self):
         # type: () -> List[dict]
         daemons = []

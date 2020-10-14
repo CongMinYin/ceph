@@ -34,12 +34,12 @@ static constexpr auto CLS_FIFO_MAX_PART_HEADER_SIZE = 512;
 static std::uint32_t part_entry_overhead;
 
 struct entry_header_pre {
-  __le64 magic;
-  __le64 pre_size;
-  __le64 header_size;
-  __le64 data_size;
-  __le64 index;
-  __le32 reserved;
+  ceph_le64 magic;
+  ceph_le64 pre_size;
+  ceph_le64 header_size;
+  ceph_le64 data_size;
+  ceph_le64 index;
+  ceph_le32 reserved;
 } __attribute__ ((packed));
 
 struct entry_header {
@@ -700,8 +700,8 @@ int EntryReader::get_next_entry(ceph::buffer::list* pbl,
     *pofs = ofs;
   }
 
-  CLS_LOG(10, "%s():%d: pre_header.pre_size=%llu", __func__, __LINE__,
-	  pre_header.pre_size);
+  CLS_LOG(10, "%s():%d: pre_header.pre_size=%" PRIu64, __func__, __LINE__,
+	  uint64_t(pre_header.pre_size));
   r = seek(pre_header.pre_size);
   if (r < 0) {
     CLS_ERR("ERROR: %s(): failed to seek: r=%d", __func__, r);
