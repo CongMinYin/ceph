@@ -386,15 +386,9 @@ Base is the package that includes all the files shared amongst ceph servers
 %package -n cephadm
 Summary:        Utility to bootstrap Ceph clusters
 Requires:       lvm2
-%if 0%{?suse_version}
-Requires:       apparmor-abstractions
-Requires:       podman
-%endif
 Requires:       python%{python3_pkgversion}
-%if ! 0%{?suse_version}
 %if 0%{?weak_deps}
 Recommends:     podman
-%endif
 %endif
 %description -n cephadm
 Utility to bootstrap a Ceph cluster and manage Ceph daemons deployed 
@@ -1397,21 +1391,7 @@ fi
 
 %postun base
 /sbin/ldconfig
-%if 0%{?suse_version}
-DISABLE_RESTART_ON_UPDATE="yes"
-%service_del_postun ceph.target
-%endif
-%if 0%{?fedora} || 0%{?rhel}
 %systemd_postun ceph.target
-%endif
-if [ $1 -ge 1 ] ; then
-  # Restart on upgrade, but only if "CEPH_AUTO_RESTART_ON_UPGRADE" is set to
-  # "yes". In any case: if units are not running, do not touch them.
-  SYSCONF_CEPH=%{_sysconfdir}/sysconfig/ceph
-  if [ -f $SYSCONF_CEPH -a -r $SYSCONF_CEPH ] ; then
-    source $SYSCONF_CEPH
-  fi
-fi
 
 %pre -n cephadm
 getent group cephadm >/dev/null || groupadd -r cephadm
@@ -1557,13 +1537,7 @@ fi
 %endif
 
 %postun mds
-%if 0%{?suse_version}
-DISABLE_RESTART_ON_UPDATE="yes"
-%service_del_postun ceph-mds@\*.service ceph-mds.target
-%endif
-%if 0%{?fedora} || 0%{?rhel}
 %systemd_postun ceph-mds@\*.service ceph-mds.target
-%endif
 if [ $1 -ge 1 ] ; then
   # Restart on upgrade, but only if "CEPH_AUTO_RESTART_ON_UPGRADE" is set to
   # "yes". In any case: if units are not running, do not touch them.
@@ -1607,13 +1581,7 @@ fi
 %endif
 
 %postun mgr
-%if 0%{?suse_version}
-DISABLE_RESTART_ON_UPDATE="yes"
-%service_del_postun ceph-mgr@\*.service ceph-mgr.target
-%endif
-%if 0%{?fedora} || 0%{?rhel}
 %systemd_postun ceph-mgr@\*.service ceph-mgr.target
-%endif
 if [ $1 -ge 1 ] ; then
   # Restart on upgrade, but only if "CEPH_AUTO_RESTART_ON_UPGRADE" is set to
   # "yes". In any case: if units are not running, do not touch them.
@@ -1750,13 +1718,7 @@ fi
 %endif
 
 %postun mon
-%if 0%{?suse_version}
-DISABLE_RESTART_ON_UPDATE="yes"
-%service_del_postun ceph-mon@\*.service ceph-mon.target
-%endif
-%if 0%{?fedora} || 0%{?rhel}
 %systemd_postun ceph-mon@\*.service ceph-mon.target
-%endif
 if [ $1 -ge 1 ] ; then
   # Restart on upgrade, but only if "CEPH_AUTO_RESTART_ON_UPGRADE" is set to
   # "yes". In any case: if units are not running, do not touch them.
@@ -1811,13 +1773,7 @@ fi
 %endif
 
 %postun -n rbd-mirror
-%if 0%{?suse_version}
-DISABLE_RESTART_ON_UPDATE="yes"
-%service_del_postun ceph-rbd-mirror@\*.service ceph-rbd-mirror.target
-%endif
-%if 0%{?fedora} || 0%{?rhel}
 %systemd_postun ceph-rbd-mirror@\*.service ceph-rbd-mirror.target
-%endif
 if [ $1 -ge 1 ] ; then
   # Restart on upgrade, but only if "CEPH_AUTO_RESTART_ON_UPGRADE" is set to
   # "yes". In any case: if units are not running, do not touch them.
@@ -1859,13 +1815,7 @@ fi
 
 %postun immutable-object-cache
 test -n "$FIRST_ARG" || FIRST_ARG=$1
-%if 0%{?suse_version}
-DISABLE_RESTART_ON_UPDATE="yes"
-%service_del_postun ceph-immutable-object-cache@\*.service ceph-immutable-object-cache.target
-%endif
-%if 0%{?fedora} || 0%{?rhel}
 %systemd_postun ceph-immutable-object-cache@\*.service ceph-immutable-object-cache.target
-%endif
 if [ $FIRST_ARG -ge 1 ] ; then
   # Restart on upgrade, but only if "CEPH_AUTO_RESTART_ON_UPGRADE" is set to
   # "yes". In any case: if units are not running, do not touch them.
@@ -1921,13 +1871,7 @@ fi
 
 %postun radosgw
 /sbin/ldconfig
-%if 0%{?suse_version}
-DISABLE_RESTART_ON_UPDATE="yes"
-%service_del_postun ceph-radosgw@\*.service ceph-radosgw.target
-%endif
-%if 0%{?fedora} || 0%{?rhel}
 %systemd_postun ceph-radosgw@\*.service ceph-radosgw.target
-%endif
 if [ $1 -ge 1 ] ; then
   # Restart on upgrade, but only if "CEPH_AUTO_RESTART_ON_UPGRADE" is set to
   # "yes". In any case: if units are not running, do not touch them.
@@ -1989,13 +1933,7 @@ fi
 %endif
 
 %postun osd
-%if 0%{?suse_version}
-DISABLE_RESTART_ON_UPDATE="yes"
-%service_del_postun ceph-osd@\*.service ceph-volume@\*.service ceph-osd.target
-%endif
-%if 0%{?fedora} || 0%{?rhel}
 %systemd_postun ceph-osd@\*.service ceph-volume@\*.service ceph-osd.target
-%endif
 if [ $1 -ge 1 ] ; then
   # Restart on upgrade, but only if "CEPH_AUTO_RESTART_ON_UPGRADE" is set to
   # "yes". In any case: if units are not running, do not touch them.

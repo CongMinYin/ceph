@@ -2950,13 +2950,10 @@ std::vector<Option> get_global_options() {
 
     Option("osd_op_queue", Option::TYPE_STR, Option::LEVEL_ADVANCED)
     .set_default("wpq")
-    .set_enum_allowed( { "wpq", "prioritized",
-	  "mclock_opclass", "mclock_client", "mclock_scheduler",
-	  "debug_random" } )
+    .set_enum_allowed( { "wpq", "mclock_scheduler", "debug_random" } )
     .set_description("which operation priority queue algorithm to use")
     .set_long_description("which operation priority queue algorithm to use; "
-			  "mclock_opclass mclock_client, and "
-			  "mclock_client_profile are currently experimental")
+			  "mclock_scheduler is currently experimental")
     .add_see_also("osd_op_queue_cut_off"),
 
     Option("osd_op_queue_cut_off", Option::TYPE_STR, Option::LEVEL_ADVANCED)
@@ -5249,13 +5246,17 @@ std::vector<Option> get_global_options() {
     .set_default("/tmp/fio")
     .set_description(""),
 
-    Option("rados_mon_op_timeout", Option::TYPE_FLOAT, Option::LEVEL_ADVANCED)
+    Option("rados_mon_op_timeout", Option::TYPE_SECS, Option::LEVEL_ADVANCED)
     .set_default(0)
-    .set_description(""),
+    .set_description("timeout for operations handled by monitors such as statfs (0 is unlimited)")
+    .set_flag(Option::FLAG_RUNTIME)
+    .set_min(0),
 
-    Option("rados_osd_op_timeout", Option::TYPE_FLOAT, Option::LEVEL_ADVANCED)
+    Option("rados_osd_op_timeout", Option::TYPE_SECS, Option::LEVEL_ADVANCED)
     .set_default(0)
-    .set_description(""),
+    .set_description("timeout for operations handled by osds such as write (0 is unlimited)")
+    .set_flag(Option::FLAG_RUNTIME)
+    .set_min(0),
 
     Option("rados_tracing", Option::TYPE_BOOL, Option::LEVEL_ADVANCED)
     .set_default(false)

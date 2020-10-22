@@ -42,7 +42,6 @@ set(librbd_internal_srcs
   cache/ImageWriteback.cc
   cache/ObjectCacherObjectDispatch.cc
   cache/ObjectCacherWriteback.cc
-  cache/PassthroughImageCache.cc
   cache/pwl/InitRequest.cc
   cache/pwl/ShutdownRequest.cc
   cache/WriteAroundObjectDispatch.cc
@@ -195,8 +194,7 @@ if(WITH_RBD_RWL)
     cache/pwl/Types.cc
     cache/pwl/ReplicatedWriteLog.cc
     cache/pwl/AbstractWriteLog.cc
-    cache/pwl/ImageDispatch.cc
-    cache/WriteLogCache.cc)
+    cache/WriteLogImageDispatch.cc)
 endif()
 
 add_library(rbd_api STATIC librbd.cc)

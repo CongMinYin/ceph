@@ -5,6 +5,7 @@
 #include "include/buffer.h"
 #include "common/dout.h"
 #include "librbd/io/AioCompletion.h"
+#include "librbd/io/Utils.h"
 #include <boost/variant/apply_visitor.hpp>
 #include <boost/variant/static_visitor.hpp>
 
@@ -16,27 +17,18 @@
 namespace librbd {
 namespace io {
 
-struct ReadResult::SetClipLengthVisitor : public boost::static_visitor<void> {
-  size_t length;
-
-  explicit SetClipLengthVisitor(size_t length) : length(length) {
-  }
-
-  void operator()(Linear &linear) const {
-    ceph_assert(length <= linear.buf_len);
-    linear.buf_len = length;
-  }
-
-  template <typename T>
-  void operator()(T &t) const {
-  }
-};
-
 struct ReadResult::SetImageExtentsVisitor : public boost::static_visitor<void> {
   Extents image_extents;
 
   explicit SetImageExtentsVisitor(const Extents& image_extents)
     : image_extents(image_extents) {
+  }
+
+  void operator()(Linear &linear) const {
+    uint64_t length = util::get_extents_length(image_extents);
+
+    ceph_assert(length <= linear.buf_len);
+    linear.buf_len = length;
   }
 
   void operator()(SparseBufferlist &sbl) const {
@@ -95,16 +87,18 @@ struct ReadResult::AssembleResultVisitor : public boost::static_visitor<void> {
   }
 
   void operator()(SparseBufferlist &sparse_bufferlist) const {
-    sparse_bufferlist.extent_map->clear();
     sparse_bufferlist.bl->clear();
-    auto buffer_extents_length = destriper.assemble_result(
-      cct, sparse_bufferlist.extent_map, sparse_bufferlist.bl);
 
     ExtentMap buffer_extent_map;
-    buffer_extent_map.swap(*sparse_bufferlist.extent_map);
+    auto buffer_extents_length = destriper.assemble_result(
+      cct, &buffer_extent_map, sparse_bufferlist.bl);
+
     ldout(cct, 20) << "image_extents="
                    << sparse_bufferlist.image_extents << ", "
                    << "buffer_extent_map=" << buffer_extent_map << dendl;
+
+    sparse_bufferlist.extent_map->clear();
+    sparse_bufferlist.extent_map->reserve(buffer_extent_map.size());
 
     // The extent-map is logically addressed by buffer-extents not image- or
     // object-extents. Translate this address mapping to image-extent
@@ -130,8 +124,8 @@ struct ReadResult::AssembleResultVisitor : public boost::static_visitor<void> {
                        << "~" << buffer_extent_length << " to image extent "
                        << image_extent_offset << "~" << buffer_extent_length
                        << dendl;
-        (*sparse_bufferlist.extent_map)[image_extent_offset] =
-          buffer_extent_length;
+        sparse_bufferlist.extent_map->emplace_back(
+          image_extent_offset, buffer_extent_length);
         ++bem_it;
       }
 
@@ -247,13 +241,8 @@ ReadResult::ReadResult(ceph::bufferlist *bl)
   : m_buffer(Bufferlist(bl)) {
 }
 
-ReadResult::ReadResult(std::map<uint64_t, uint64_t> *extent_map,
-                       ceph::bufferlist *bl)
+ReadResult::ReadResult(Extents* extent_map, ceph::bufferlist* bl)
   : m_buffer(SparseBufferlist(extent_map, bl)) {
-}
-
-void ReadResult::set_clip_length(size_t length) {
-  boost::apply_visitor(SetClipLengthVisitor(length), m_buffer);
 }
 
 void ReadResult::set_image_extents(const Extents& image_extents) {

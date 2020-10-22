@@ -61,9 +61,8 @@ public:
   ReadResult(char *buf, size_t buf_len);
   ReadResult(const struct iovec *iov, int iov_count);
   ReadResult(ceph::bufferlist *bl);
-  ReadResult(std::map<uint64_t, uint64_t> *extent_map, ceph::bufferlist *bl);
+  ReadResult(Extents* extent_map, ceph::bufferlist* bl);
 
-  void set_clip_length(size_t length);
   void set_image_extents(const Extents& image_extents);
 
   void assemble_result(CephContext *cct);
@@ -97,13 +96,12 @@ private:
   };
 
   struct SparseBufferlist {
-    std::map<uint64_t, uint64_t> *extent_map;
+    Extents *extent_map;
     ceph::bufferlist *bl;
 
     Extents image_extents;
 
-    SparseBufferlist(std::map<uint64_t, uint64_t> *extent_map,
-                     ceph::bufferlist *bl)
+    SparseBufferlist(Extents* extent_map, ceph::bufferlist* bl)
       : extent_map(extent_map), bl(bl) {
     }
   };
@@ -113,7 +111,6 @@ private:
                          Vector,
                          Bufferlist,
                          SparseBufferlist> Buffer;
-  struct SetClipLengthVisitor;
   struct SetImageExtentsVisitor;
   struct AssembleResultVisitor;
 
