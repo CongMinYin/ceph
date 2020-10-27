@@ -428,12 +428,8 @@ def cephfs_setup(ctx, config):
     if mdss.remotes:
         log.info('Setting up CephFS filesystem...')
 
-        fs = Filesystem(ctx, name='cephfs', create=True,
-                        ec_profile=config.get('cephfs_ec_profile', None))
-
-        max_mds = config.get('max_mds', 1)
-        if max_mds > 1:
-            fs.set_max_mds(max_mds)
+        Filesystem(ctx, fs_config=config.get('cephfs', None), name='cephfs',
+                   create=True, ec_profile=config.get('cephfs_ec_profile', None))
 
     yield
 
@@ -974,14 +970,9 @@ def cluster(ctx, config):
                 )
             mnt_point = DATA_PATH.format(
                 type_='osd', cluster=cluster_name, id_=id_)
-            try:
-                remote.run(args=[
-                    'sudo', 'chown', '-R', 'ceph:ceph', mnt_point
-                ])
-            except run.CommandFailedError as e:
-                # hammer does not have ceph user, so ignore this error
-                log.info('ignoring error when chown ceph:ceph,'
-                         'probably installing hammer: %s', e)
+            remote.run(args=[
+                'sudo', 'chown', '-R', 'ceph:ceph', mnt_point
+            ])
 
     log.info('Reading keys from all nodes...')
     keys_fp = BytesIO()
@@ -1071,14 +1062,9 @@ def cluster(ctx, config):
                     '--keyring', keyring_path,
                 ],
             )
-            try:
-                remote.run(args=[
-                    'sudo', 'chown', '-R', 'ceph:ceph', mnt_point
-                ])
-            except run.CommandFailedError as e:
-                # hammer does not have ceph user, so ignore this error
-                log.info('ignoring error when chown ceph:ceph,'
-                         'probably installing hammer: %s', e)
+            remote.run(args=[
+                'sudo', 'chown', '-R', 'ceph:ceph', mnt_point
+            ])
 
     run.wait(
         mons.run(
@@ -1321,7 +1307,7 @@ def run_daemon(ctx, config, type_):
         daemon_signal = 'term'
 
     # create osds in order.  (this only matters for pre-luminous, which might
-    # be hammer, which doesn't take an id_ argument to legacy 'osd create').
+    # be jewel/hammer, which doesn't take an id_ argument to legacy 'osd create').
     osd_uuids  = {}
     for remote, roles_for_host in daemons.remotes.items():
         is_type_ = teuthology.is_type(type_, cluster_name)
@@ -1348,7 +1334,7 @@ def run_daemon(ctx, config, type_):
                 ]
             )
         except:
-            # fallback to pre-luminous (hammer or jewel)
+            # fallback to pre-luminous (jewel)
             remote.run(
                 args=[
                 'sudo', 'ceph', '--cluster', cluster_name,
@@ -1719,6 +1705,20 @@ def task(ctx, config):
             fs: xfs
             mkfs_options: [-b,size=65536,-l,logdev=/dev/sdc1]
             mount_options: [nobarrier, inode64]
+
+    To change the cephfs's default max_mds (1), use::
+
+        tasks:
+        - ceph:
+            cephfs:
+              max_mds: 2
+
+    To change the mdsmap's default session_timeout (60 seconds), use::
+
+        tasks:
+        - ceph:
+            cephfs:
+              session_timeout: 300
 
     Note, this will cause the task to check the /scratch_devs file on each node
     for available devices.  If no such file is found, /dev/sdb will be used.
