@@ -92,6 +92,7 @@ int Credentials::generateCredentials(CephContext* cct,
   token.access_key_id = accessKeyId;
   token.secret_access_key = secretAccessKey;
   token.expiration = expiration;
+  token.issued_at = ceph::to_iso_8601(t);
 
   //Authorization info
   if (policy)
@@ -179,6 +180,7 @@ AssumeRoleRequestBase::AssumeRoleRequestBase( CephContext* cct,
                                               const string& roleSessionName)
   : cct(cct), iamPolicy(iamPolicy), roleArn(roleArn), roleSessionName(roleSessionName)
 {
+  MIN_DURATION_IN_SECS = cct->_conf->rgw_sts_min_session_duration;
   if (duration.empty()) {
     this->duration = DEFAULT_DURATION_IN_SECS;
   } else {

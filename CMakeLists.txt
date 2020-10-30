@@ -196,6 +196,10 @@ include(CMakeDependentOption)
 
 CMAKE_DEPENDENT_OPTION(WITH_ZBD "Enable libzbd bluestore backend" OFF
   "WITH_BLUESTORE" OFF)
+if(WITH_ZBD)
+  find_package(zbd)
+  set(HAVE_LIBZBD ${ZBD_FOUND})
+endif()
 
 CMAKE_DEPENDENT_OPTION(WITH_LIBURING "Enable io_uring bluestore backend" OFF
   "WITH_BLUESTORE;HAVE_LIBAIO" OFF)
@@ -209,6 +213,9 @@ CMAKE_DEPENDENT_OPTION(WITH_BLUESTORE_PMEM "Enable PMDK libraries" OFF
 
 CMAKE_DEPENDENT_OPTION(WITH_RBD_RWL "Enable librbd persistent write back cache" OFF
   "WITH_RBD" OFF)
+
+CMAKE_DEPENDENT_OPTION(WITH_RBD_SSD_CACHE "Enable librbd persistent write back cache for SSDs" OFF
+    "WITH_RBD" OFF)
 
 CMAKE_DEPENDENT_OPTION(WITH_SYSTEM_PMDK "Require and build with system PMDK" OFF
   "WITH_RBD_RWL OR WITH_BLUESTORE_PMEM" OFF)
