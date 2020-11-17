@@ -77,8 +77,7 @@ seastar::future<> ReplicatedRecoveryBackend::recover_object(
       if (recovery.obc)
 	recovery.obc->drop_recovery_read();
       recovering.erase(soid);
-      return seastar::make_exception_future<>(
-	  std::runtime_error(fmt::format("Errors during pushing for {}", soid)));
+      return seastar::make_exception_future<>(e);
     });
   });
 }
@@ -135,15 +134,8 @@ seastar::future<> ReplicatedRecoveryBackend::load_obc_for_recovery(
     return recovery_waiter.obc->wait_recovery_read();
   }, crimson::osd::PG::load_obc_ertr::all_same_way(
       [this, &recovery_waiter, soid](const std::error_code& e) {
-      auto [obc, existed] =
-	  shard_services.obc_registry.get_cached_obc(soid);
-      logger().debug("load_obc_for_recovery: load failure of obc: {}",
-	  obc->obs.oi.soid);
-      recovery_waiter.obc = obc;
-      // obc is loaded with excl lock
-      recovery_waiter.obc->put_lock_type(RWState::RWEXCL);
-      ceph_assert_always(recovery_waiter.obc->get_recovery_read());
-      return seastar::make_ready_future<>();
+      logger().error("load_obc_for_recovery: load failure of obc: {}", soid);
+      return seastar::make_exception_future<>(e);
     })
   );
 }
@@ -401,8 +393,8 @@ seastar::future<ObjectRecoveryProgress> ReplicatedRecoveryBackend::build_push_op
     [this, &recovery_info, &progress, stat, pop]
     (auto& new_progress, auto& oi, auto& available, auto& v) {
     return [this, &recovery_info, &progress, &new_progress, &oi, pop, &v] {
+      v = recovery_info.version;
       if (progress.first) {
-	v = recovery_info.version;
 	return backend->omap_get_header(coll, ghobject_t(recovery_info.soid))
 	  .then([this, &recovery_info, pop](auto bl) {
 	  pop->omap_header.claim_append(bl);
@@ -426,40 +418,11 @@ seastar::future<ObjectRecoveryProgress> ReplicatedRecoveryBackend::build_push_op
 	);
       }
       return seastar::make_ready_future<>();
-    }().then([this, &recovery_info] {
-      return shard_services.get_store().get_omap_iterator(coll,
-		ghobject_t(recovery_info.soid));
-    }).then([&progress, &available, &new_progress, pop](auto iter) {
-      if (!progress.omap_complete) {
-	return iter->lower_bound(progress.omap_recovered_to).then(
-	  [iter, &new_progress, pop, &available](int ret) {
-	  return seastar::repeat([iter, &new_progress, pop, &available] {
-	    if (!iter->valid()) {
-	      new_progress.omap_complete = true;
-	      return seastar::make_ready_future<seastar::stop_iteration>(
-			seastar::stop_iteration::yes);
-	    }
-	    if (!pop->omap_entries.empty()
-		&& ((crimson::common::local_conf()->osd_recovery_max_omap_entries_per_chunk > 0
-		    && pop->omap_entries.size()
-		    >= crimson::common::local_conf()->osd_recovery_max_omap_entries_per_chunk)
-		  || available <= iter->key().size() + iter->value().length())) {
-	      new_progress.omap_recovered_to = iter->key();
-	      return seastar::make_ready_future<seastar::stop_iteration>(
-			seastar::stop_iteration::yes);
-	    }
-	    pop->omap_entries.insert(make_pair(iter->key(), iter->value()));
-	    if ((iter->key().size() + iter->value().length()) <= available)
-	      available -= (iter->key().size() + iter->value().length());
-	    else
-	      available = 0;
-	    return iter->next().then([](int r) {
-	      return seastar::stop_iteration::no;
-	    });
-	  });
-	});
-      }
-      return seastar::make_ready_future<>();
+    }().then([this, &recovery_info, &progress, &new_progress, &available, pop] {
+      return read_omap_for_push_op(recovery_info.soid,
+                                   progress,
+                                   new_progress,
+                                   available, pop);
     }).then([this, &recovery_info, &progress, &available, pop] {
       logger().debug("build_push_op: available: {}, copy_subset: {}",
 		     available, recovery_info.copy_subset);
@@ -542,6 +505,57 @@ ReplicatedRecoveryBackend::read_object_for_push_op(
     logger().debug("build_push_op: read exception");
     return seastar::make_exception_future<uint64_t>(e);
   }));
+}
+
+seastar::future<>
+ReplicatedRecoveryBackend::read_omap_for_push_op(
+    const hobject_t& oid,
+    const ObjectRecoveryProgress& progress,
+    ObjectRecoveryProgress& new_progress,
+    uint64_t max_len,
+    PushOp* push_op)
+{
+  return shard_services.get_store().get_omap_iterator(coll, ghobject_t{oid})
+    .then([&progress, &new_progress, &max_len, push_op](auto omap_iter) {
+    if (progress.omap_complete) {
+      return seastar::make_ready_future<>();
+    }
+    return omap_iter->lower_bound(progress.omap_recovered_to).then(
+      [omap_iter, &new_progress, &max_len, push_op] {
+      return seastar::do_until([omap_iter, &new_progress, max_len, push_op] {
+        if (!omap_iter->valid()) {
+          new_progress.omap_complete = true;
+          return true;
+        }
+        if (push_op->omap_entries.empty()) {
+          return false;
+        }
+        if (const uint64_t entries_per_chunk =
+            crimson::common::local_conf()->osd_recovery_max_omap_entries_per_chunk;
+            entries_per_chunk > 0 &&
+            push_op->omap_entries.size() >= entries_per_chunk) {
+          new_progress.omap_recovered_to = omap_iter->key();
+          return true;
+        }
+        if (omap_iter->key().size() + omap_iter->value().length() > max_len) {
+          new_progress.omap_recovered_to = omap_iter->key();
+          return true;
+        }
+        return false;
+      },
+      [omap_iter, &max_len, push_op] {
+        push_op->omap_entries.emplace(omap_iter->key(), omap_iter->value());
+        if (const uint64_t entry_size =
+            omap_iter->key().size() + omap_iter->value().length() > max_len;
+            entry_size >= max_len) {
+          max_len -= entry_size;
+        } else {
+          max_len = 0;
+        }
+        return omap_iter->next();
+      });
+    });
+  });
 }
 
 std::list<std::map<pg_shard_t, pg_missing_t>::const_iterator>

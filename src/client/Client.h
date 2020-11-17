@@ -47,6 +47,7 @@
 #include <memory>
 #include <set>
 #include <string>
+#include <thread>
 
 using std::set;
 using std::map;
@@ -243,6 +244,7 @@ public:
   template <typename T> friend class RWRef;
 
   using Dispatcher::cct;
+  using clock = ceph::coarse_mono_clock;
 
   typedef int (*add_dirent_cb_t)(void *p, struct dirent *de, struct ceph_statx *stx, off_t off, Inode *in);
 
@@ -737,7 +739,25 @@ public:
   void renew_caps();
   void renew_caps(MetaSession *session);
   void flush_cap_releases();
+  void renew_and_flush_cap_releases();
   void tick();
+  void start_tick_thread();
+
+  void inc_dentry_nr() {
+    ++dentry_nr;
+  }
+  void dec_dentry_nr() {
+    --dentry_nr;
+  }
+  void dlease_hit() {
+    ++dlease_hits;
+  }
+  void dlease_miss() {
+    ++dlease_misses;
+  }
+  std::tuple<uint64_t, uint64_t, uint64_t> get_dlease_hit_rates() {
+    return std::make_tuple(dlease_hits, dlease_misses, dentry_nr);
+  }
 
   void cap_hit() {
     ++cap_hits;
@@ -751,10 +771,14 @@ public:
 
   xlist<Inode*> &get_dirty_list() { return dirty_list; }
 
-  /* timer_lock for 'timer' and 'tick_event' */
+  /* timer_lock for 'timer' */
   ceph::mutex timer_lock = ceph::make_mutex("Client::timer_lock");
-  Context *tick_event = nullptr;
   SafeTimer timer;
+
+  /* tick thread */
+  std::thread upkeeper;
+  ceph::condition_variable upkeep_cond;
+  bool tick_thread_stopped = false;
 
   std::unique_ptr<PerfCounters> logger;
   std::unique_ptr<MDSMap> mdsmap;
@@ -1174,6 +1198,8 @@ private:
   int _read_sync(Fh *f, uint64_t off, uint64_t len, bufferlist *bl, bool *checkeof);
   int _read_async(Fh *f, uint64_t off, uint64_t len, bufferlist *bl);
 
+  bool _dentry_valid(const Dentry *dn);
+
   // internal interface
   //   call these with client_lock held!
   int _do_lookup(Inode *dir, const string& name, int mask, InodeRef *target,
@@ -1421,6 +1447,11 @@ private:
   int reclaim_errno = 0;
   epoch_t reclaim_osd_epoch = 0;
   entity_addrvec_t reclaim_target_addrs;
+
+  // dentry lease metrics
+  uint64_t dentry_nr = 0;
+  uint64_t dlease_hits = 0;
+  uint64_t dlease_misses = 0;
 
   uint64_t cap_hits = 0;
   uint64_t cap_misses = 0;

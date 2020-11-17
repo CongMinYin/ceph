@@ -328,7 +328,7 @@ if(WITH_SEASTAR)
       _find_package(${ARGV})
     endif()
   endmacro ()
-  set(Seastar_API_LEVEL "5" CACHE STRING "" FORCE)
+  set(Seastar_API_LEVEL "6" CACHE STRING "" FORCE)
   set(Seastar_HWLOC OFF CACHE BOOL "" FORCE)
   set(Seastar_STD_OPTIONAL_VARIANT_STRINGVIEW ON CACHE BOOL "" FORCE)
   if(Seastar_DPDK)
@@ -509,7 +509,7 @@ endif(${WITH_LTTNG})
 
 add_subdirectory(global)
 
-add_subdirectory(lua)
+find_package(Lua REQUIRED)
 
 # rados object classes
 add_subdirectory(cls)

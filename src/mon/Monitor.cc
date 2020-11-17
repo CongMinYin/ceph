@@ -1235,6 +1235,9 @@ void Monitor::bootstrap()
     dout(10) << "bootstrap -- finished compaction" << dendl;
   }
 
+  // stretch mode bits
+  set_elector_disallowed_leaders(false);
+
   // singleton monitor?
   if (monmap->size() == 1 && rank == 0) {
     win_standalone_election();
@@ -2578,7 +2581,7 @@ void Monitor::_quorum_status(Formatter *f, ostream& ss)
     f->dump_string("mon", *p);
   f->close_section(); // quorum_names
 
-  f->dump_string("quorum_leader_name", quorum.empty() ? string() : monmap->get_name(*quorum.begin()));
+  f->dump_string("quorum_leader_name", quorum.empty() ? string() : monmap->get_name(leader));
 
   if (!quorum.empty()) {
     f->dump_int(
@@ -2674,6 +2677,7 @@ void Monitor::get_mon_status(Formatter *f)
   f->close_section();
 
   f->dump_object("feature_map", session_map.feature_map);
+  f->dump_bool("stretch_mode", stretch_mode_engaged);
   f->close_section(); // mon_status
 }
 
@@ -2831,7 +2835,16 @@ void Monitor::do_health_to_clog(bool force)
       summary == health_status_cache.summary &&
       level == health_status_cache.overall)
     return;
-  clog->health(level) << "overall " << summary;
+
+  if (g_conf()->mon_health_detail_to_clog &&
+      summary != health_status_cache.summary &&
+      level != HEALTH_OK) {
+    string details;
+    level = healthmon()->get_health_status(true, nullptr, &details);
+    clog->health(level) << "Health detail: " << details;
+  } else {
+    clog->health(level) << "overall " << summary;
+  }
   health_status_cache.summary = summary;
   health_status_cache.overall = level;
 }
@@ -3634,7 +3647,7 @@ void Monitor::handle_command(MonOpRequestRef op)
       f.reset(Formatter::create("json-pretty"));
     f->open_object_section("report");
     f->dump_stream("cluster_fingerprint") << fingerprint;
-    f->dump_string("version", ceph_version_to_str());
+    f->dump_string("version", ceph_version_to_str(cct));
     f->dump_string("commit", git_version_to_str());
     f->dump_stream("timestamp") << ceph_clock_now();
 
@@ -5355,6 +5368,29 @@ void Monitor::count_metadata(const string& field, Formatter *f)
   f->close_section();
 }
 
+void Monitor::get_all_versions(std::map<string, list<string> > &versions)
+{
+  // mon
+  get_versions(versions);
+  // osd
+  osdmon()->get_versions(versions);
+  // mgr
+  mgrmon()->get_versions(versions);
+  // mds
+  mdsmon()->get_versions(versions);
+  dout(20) << __func__ << " all versions=" << versions << dendl;
+}
+
+void Monitor::get_versions(std::map<string, list<string> > &versions)
+{
+  int i = 0;
+  for (auto& [rank, metadata] : mon_metadata) {
+    auto q = metadata.find("ceph_version_short");
+    versions[q->second].push_back(string("mon.") + monmap->get_name(rank));
+    i = i + 1;
+  }
+}
+
 int Monitor::print_nodes(Formatter *f, ostream& err)
 {
   map<string, list<string> > mons;	// hostname => mon
@@ -6449,6 +6485,16 @@ void Monitor::notify_new_monmap()
     maybe_engage_stretch_mode();
   }
 
+  if (is_stretch_mode()) {
+    if (!monmap->stretch_marked_down_mons.empty()) {
+      set_degraded_stretch_mode();
+    }
+  }
+  set_elector_disallowed_leaders(true);
+}
+
+void Monitor::set_elector_disallowed_leaders(bool allow_election)
+{
   set<int> dl;
   for (auto name : monmap->disallowed_leaders) {
     dl.insert(monmap->get_rank(name));
@@ -6457,12 +6503,13 @@ void Monitor::notify_new_monmap()
     for (auto name : monmap->stretch_marked_down_mons) {
       dl.insert(monmap->get_rank(name));
     }
-    if (!monmap->stretch_marked_down_mons.empty()) {
-      set_degraded_stretch_mode();
-    }
     dl.insert(monmap->get_rank(monmap->tiebreaker_mon));
   }
-  elector.set_disallowed_leaders(dl);
+
+  bool disallowed_changed = elector.set_disallowed_leaders(dl);
+  if (disallowed_changed && allow_election) {
+    elector.call_election();
+  }
 }
 
 struct CMonEnableStretchMode : public Context {

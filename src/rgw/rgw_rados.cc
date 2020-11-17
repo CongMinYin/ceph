@@ -517,7 +517,7 @@ public:
   }
 
   int process() override {
-    sync.run();
+    sync.run(null_yield);
     return 0;
   }
 };
@@ -1334,10 +1334,10 @@ int RGWRados::init_complete()
 int RGWRados::init_svc(bool raw)
 {
   if (raw) {
-    return svc.init_raw(cct, use_cache);
+    return svc.init_raw(cct, use_cache, null_yield);
   }
 
-  return svc.init(cct, use_cache, run_sync_thread);
+  return svc.init(cct, use_cache, run_sync_thread, null_yield);
 }
 
 int RGWRados::init_ctl()
@@ -2200,6 +2200,7 @@ int RGWRados::create_bucket(const RGWUserInfo& owner, rgw_bucket& bucket,
                             real_time creation_time,
                             rgw_bucket *pmaster_bucket,
                             uint32_t *pmaster_num_shards,
+			    optional_yield y,
 			    bool exclusive)
 {
 #define MAX_CREATE_RETRIES 20 /* need to bound retries */
@@ -2209,7 +2210,7 @@ int RGWRados::create_bucket(const RGWUserInfo& owner, rgw_bucket& bucket,
   for (int i = 0; i < MAX_CREATE_RETRIES; i++) {
     int ret = 0;
     ret = svc.zone->select_bucket_placement(owner, zonegroup_id, placement_rule,
-                                            &selected_placement_rule, &rule_info);
+                                            &selected_placement_rule, &rule_info, y);
     if (ret < 0)
       return ret;
 
@@ -2235,15 +2236,14 @@ int RGWRados::create_bucket(const RGWUserInfo& owner, rgw_bucket& bucket,
     info.owner = owner.user_id;
     info.zonegroup = zonegroup_id;
     info.placement_rule = selected_placement_rule;
-    info.layout.current_index.layout.type = rule_info.index_type;
     info.swift_ver_location = swift_ver_location;
     info.swift_versioning = (!swift_ver_location.empty());
+    init_default_bucket_layout(cct, info, svc.zone->get_zone());
     if (pmaster_num_shards) {
+      // TODO: remove this once sync doesn't require the same shard count
       info.layout.current_index.layout.normal.num_shards = *pmaster_num_shards;
-    } else {
-      info.layout.current_index.layout.normal.num_shards = bucket_index_max_shards;
     }
-    info.layout.current_index.layout.normal.hash_type = rgw::BucketHashType::Mod;
+    info.layout.current_index.layout.type = rule_info.index_type;
     info.requester_pays = false;
     if (real_clock::is_zero(creation_time)) {
       info.creation_time = ceph::real_clock::now();
@@ -9046,13 +9046,15 @@ int RGWRados::add_bucket_to_reshard(const RGWBucketInfo& bucket_info, uint32_t n
 }
 
 int RGWRados::check_quota(const rgw_user& bucket_owner, rgw_bucket& bucket,
-                          RGWQuotaInfo& user_quota, RGWQuotaInfo& bucket_quota, uint64_t obj_size, bool check_size_only)
+                          RGWQuotaInfo& user_quota, RGWQuotaInfo& bucket_quota,
+			  uint64_t obj_size, optional_yield y,
+			  bool check_size_only)
 {
   // if we only check size, then num_objs will set to 0
   if(check_size_only)
-    return quota_handler->check_quota(bucket_owner, bucket, user_quota, bucket_quota, 0, obj_size);
+    return quota_handler->check_quota(bucket_owner, bucket, user_quota, bucket_quota, 0, obj_size, y);
 
-  return quota_handler->check_quota(bucket_owner, bucket, user_quota, bucket_quota, 1, obj_size);
+  return quota_handler->check_quota(bucket_owner, bucket, user_quota, bucket_quota, 1, obj_size, y);
 }
 
 int RGWRados::get_target_shard_id(const rgw::bucket_index_normal_layout& layout, const string& obj_key,

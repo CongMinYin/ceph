@@ -1685,38 +1685,33 @@ void MDSMonitor::check_sub(Subscription *sub)
   FSMap _fsmap_copy = get_fsmap();
   _fsmap_copy.filter(sub->session->get_allowed_fs_names());
   const auto& fsmap = _fsmap_copy;
+  if (sub->next > fsmap.get_epoch()) {
+    return;
+  }
 
   if (sub->type == "fsmap") {
-    if (sub->next <= fsmap.get_epoch()) {
-      sub->session->con->send_message(new MFSMap(mon->monmap->fsid, fsmap));
-      if (sub->onetime) {
-        mon->session_map.remove_sub(sub);
-      } else {
-        sub->next = fsmap.get_epoch() + 1;
-      }
+    sub->session->con->send_message(new MFSMap(mon->monmap->fsid, fsmap));
+    if (sub->onetime) {
+      mon->session_map.remove_sub(sub);
+    } else {
+      sub->next = fsmap.get_epoch() + 1;
     }
   } else if (sub->type == "fsmap.user") {
-    if (sub->next <= fsmap.get_epoch()) {
-      FSMapUser fsmap_u;
-      fsmap_u.epoch = fsmap.get_epoch();
-      fsmap_u.legacy_client_fscid = fsmap.legacy_client_fscid;
-      for (const auto &p : fsmap.filesystems) {
-	FSMapUser::fs_info_t& fs_info = fsmap_u.filesystems[p.second->fscid];
-	fs_info.cid = p.second->fscid;
-	fs_info.name = p.second->mds_map.fs_name;
-      }
-      sub->session->con->send_message(new MFSMapUser(mon->monmap->fsid, fsmap_u));
-      if (sub->onetime) {
-	mon->session_map.remove_sub(sub);
-      } else {
-	sub->next = fsmap.get_epoch() + 1;
-      }
+    FSMapUser fsmap_u;
+    fsmap_u.epoch = fsmap.get_epoch();
+    fsmap_u.legacy_client_fscid = fsmap.legacy_client_fscid;
+    for (const auto &p : fsmap.filesystems) {
+      FSMapUser::fs_info_t& fs_info = fsmap_u.filesystems[p.second->fscid];
+      fs_info.cid = p.second->fscid;
+      fs_info.name = p.second->mds_map.fs_name;
+    }
+    sub->session->con->send_message(new MFSMapUser(mon->monmap->fsid, fsmap_u));
+    if (sub->onetime) {
+      mon->session_map.remove_sub(sub);
+    } else {
+      sub->next = fsmap.get_epoch() + 1;
     }
   } else if (sub->type.compare(0, 6, "mdsmap") == 0) {
-    if (sub->next > fsmap.get_epoch()) {
-      return;
-    }
-
     const bool is_mds = sub->session->name.is_mds();
     mds_gid_t mds_gid = MDS_GID_NONE;
     fs_cluster_id_t fscid = FS_CLUSTER_ID_NONE;
@@ -1879,6 +1874,20 @@ void MDSMonitor::count_metadata(const std::string &field, Formatter *f)
     f->dump_int(p.first.c_str(), p.second);
   }
   f->close_section();
+}
+
+void MDSMonitor::get_versions(std::map<string, list<string> > &versions)
+{
+  map<mds_gid_t,Metadata> meta;
+  load_metadata(meta);
+  const auto &fsmap = get_fsmap();
+  std::map<mds_gid_t, mds_info_t> map = fsmap.get_mds_info();
+  dout(10) << __func__ << " mds meta=" << meta << dendl;
+  for (auto& p : meta) {
+    auto q = p.second.find("ceph_version_short");
+    if (q == p.second.end()) continue;
+    versions[q->second].push_back(string("mds.") + map[p.first].name);
+  }
 }
 
 int MDSMonitor::dump_metadata(const FSMap& fsmap, const std::string &who,

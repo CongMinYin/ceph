@@ -197,11 +197,11 @@ include(CMakeDependentOption)
 CMAKE_DEPENDENT_OPTION(WITH_ZBD "Enable libzbd bluestore backend" OFF
   "WITH_BLUESTORE" OFF)
 if(WITH_ZBD)
-  find_package(zbd)
+  find_package(zbd REQUIRED)
   set(HAVE_LIBZBD ${ZBD_FOUND})
 endif()
 
-CMAKE_DEPENDENT_OPTION(WITH_LIBURING "Enable io_uring bluestore backend" OFF
+CMAKE_DEPENDENT_OPTION(WITH_LIBURING "Enable io_uring bluestore backend" ON
   "WITH_BLUESTORE;HAVE_LIBAIO" OFF)
 set(HAVE_LIBURING ${WITH_LIBURING})
 
@@ -506,14 +506,7 @@ set(CEPH_TEST_TIMEOUT 3600 CACHE STRING
 
 # fio
 option(WITH_FIO "build with fio plugin enabled" OFF)
-option(WITH_SYSTEM_FIO "require and build with system fio" OFF)
-if(WITH_SYSTEM_FIO)
-  find_package(fio REQUIRED)
-elseif(WITH_FIO)
-  if (NOT FIO_INCLUDE_DIR)
-    # Use local external fio if include directory is not set
-    set(FIO_INCLUDE_DIR ${CMAKE_BINARY_DIR}/src/fio)
-  endif()
+if(WITH_FIO)
   include(BuildFIO)
   build_fio()
 endif()

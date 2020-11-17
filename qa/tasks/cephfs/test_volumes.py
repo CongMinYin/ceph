@@ -11,6 +11,7 @@ from hashlib import md5
 from textwrap import dedent
 
 from tasks.cephfs.cephfs_test_case import CephFSTestCase
+from tasks.cephfs.fuse_mount import FuseMount
 from teuthology.exceptions import CommandFailedError
 
 log = logging.getLogger(__name__)
@@ -25,7 +26,7 @@ class TestVolumesHelper(CephFSTestCase):
     TEST_FILE_NAME_PREFIX="subvolume_file"
 
     # for filling subvolume with data
-    CLIENTS_REQUIRED = 1
+    CLIENTS_REQUIRED = 2
     MDSS_REQUIRED = 2
 
     # io defaults
@@ -102,10 +103,7 @@ class TestVolumesHelper(CephFSTestCase):
             self.assertEqual(sval, cval)
 
             # inode timestamps
-            sval = int(self.mount_a.run_shell(['stat', '-c' '%X', source_path]).stdout.getvalue().strip())
-            cval = int(self.mount_a.run_shell(['stat', '-c' '%X', sink_path]).stdout.getvalue().strip())
-            self.assertEqual(sval, cval)
-
+            # do not check access as kclient will generally not update this like ceph-fuse will.
             sval = int(self.mount_a.run_shell(['stat', '-c' '%Y', source_path]).stdout.getvalue().strip())
             cval = int(self.mount_a.run_shell(['stat', '-c' '%Y', sink_path]).stdout.getvalue().strip())
             self.assertEqual(sval, cval)
@@ -118,7 +116,9 @@ class TestVolumesHelper(CephFSTestCase):
 
         # verify quota is inherited from source snapshot
         src_quota = self.mount_a.getfattr(source_path, "ceph.quota.max_bytes")
-        self.assertEqual(clone_info["bytes_quota"], "infinite" if src_quota is None else int(src_quota))
+        # FIXME: kclient fails to get this quota value: https://tracker.ceph.com/issues/48075
+        if isinstance(self.mount_a, FuseMount):
+            self.assertEqual(clone_info["bytes_quota"], "infinite" if src_quota is None else int(src_quota))
 
         if clone_pool:
             # verify pool is set as per request
@@ -345,6 +345,26 @@ class TestVolumesHelper(CephFSTestCase):
         else:
             self.mount_a.run_shell(['rmdir', trashpath])
 
+    def _configure_guest_auth(self, guest_mount, authid, key):
+        """
+        Set up auth credentials for a guest client.
+        """
+        # Create keyring file for the guest client.
+        keyring_txt = dedent("""
+        [client.{authid}]
+            key = {key}
+
+        """.format(authid=authid,key=key))
+
+        guest_mount.client_id = authid
+        guest_mount.client_remote.write_file(guest_mount.get_keyring_path(),
+                                             keyring_txt, sudo=True)
+        # Add a guest client section to the ceph config file.
+        self.config_set("client.{0}".format(authid), "debug client", 20)
+        self.config_set("client.{0}".format(authid), "debug objecter", 20)
+        self.set_conf("client.{0}".format(authid),
+                      "keyring", guest_mount.get_keyring_path())
+
     def setUp(self):
         super(TestVolumesHelper, self).setUp()
         self.volname = None
@@ -389,7 +409,7 @@ class TestVolumes(TestVolumesHelper):
         volumes = [volume['name'] for volume in vls]
 
         #create new volumes and add it to the existing list of volumes
-        volumenames = self._generate_random_volume_name(3)
+        volumenames = self._generate_random_volume_name(2)
         for volumename in volumenames:
             self._fs_cmd("volume", "create", volumename)
         volumes.extend(volumenames)
@@ -413,6 +433,8 @@ class TestVolumes(TestVolumesHelper):
         That the volume can only be removed when --yes-i-really-mean-it is used
         and verify that the deleted volume is not listed anymore.
         """
+        for m in self.mounts:
+            m.umount_wait()
         try:
             self._fs_cmd("volume", "rm", self.volname)
         except CommandFailedError as ce:
@@ -435,6 +457,8 @@ class TestVolumes(TestVolumesHelper):
         That the arbitrary pool added to the volume out of band is removed
         successfully on volume removal.
         """
+        for m in self.mounts:
+            m.umount_wait()
         new_pool = "new_pool"
         # add arbitrary data pool
         self.fs.add_data_pool(new_pool)
@@ -456,6 +480,8 @@ class TestVolumes(TestVolumesHelper):
         That the volume can only be removed when mon_allowd_pool_delete is set
         to true and verify that the pools are removed after volume deletion.
         """
+        for m in self.mounts:
+            m.umount_wait()
         self.config_set('mon', 'mon_allow_pool_delete', False)
         try:
             self._fs_cmd("volume", "rm", self.volname, "--yes-i-really-mean-it")
@@ -551,7 +577,7 @@ class TestSubvolumeGroups(TestVolumesHelper):
         self.assertNotEqual(default_pool, new_pool)
 
         # add data pool
-        self.fs.add_data_pool(new_pool)
+        newid = self.fs.add_data_pool(new_pool)
 
         # create group specifying the new data pool as its pool layout
         self._fs_cmd("subvolumegroup", "create", self.volname, group2,
@@ -559,7 +585,10 @@ class TestSubvolumeGroups(TestVolumesHelper):
         group2_path = self._get_subvolume_group_path(self.volname, group2)
 
         desired_pool = self.mount_a.getfattr(group2_path, "ceph.dir.layout.pool")
-        self.assertEqual(desired_pool, new_pool)
+        try:
+            self.assertEqual(desired_pool, new_pool)
+        except AssertionError:
+            self.assertEqual(int(desired_pool), newid) # old kernel returns id
 
         self._fs_cmd("subvolumegroup", "rm", self.volname, group1)
         self._fs_cmd("subvolumegroup", "rm", self.volname, group2)
@@ -863,7 +892,7 @@ class TestSubvolumes(TestVolumesHelper):
         self.assertNotEqual(default_pool, new_pool)
 
         # add data pool
-        self.fs.add_data_pool(new_pool)
+        newid = self.fs.add_data_pool(new_pool)
 
         # create subvolume specifying the new data pool as its pool layout
         self._fs_cmd("subvolume", "create", self.volname, subvol2, "--group_name", group,
@@ -871,7 +900,10 @@ class TestSubvolumes(TestVolumesHelper):
         subvol2_path = self._get_subvolume_path(self.volname, subvol2, group_name=group)
 
         desired_pool = self.mount_a.getfattr(subvol2_path, "ceph.dir.layout.pool")
-        self.assertEqual(desired_pool, new_pool)
+        try:
+            self.assertEqual(desired_pool, new_pool)
+        except AssertionError:
+            self.assertEqual(int(desired_pool), newid) # old kernel returns id
 
         self._fs_cmd("subvolume", "rm", self.volname, subvol2, group)
         self._fs_cmd("subvolume", "rm", self.volname, subvol1, group)
@@ -1142,6 +1174,122 @@ class TestSubvolumes(TestVolumesHelper):
         # verify trash dir is clean
         self._wait_for_trash_empty()
 
+    ### authorize operations
+
+    def test_authorize_deauthorize_legacy_subvolume(self):
+        subvolume = self._generate_random_subvolume_name()
+        group = self._generate_random_group_name()
+        authid = "alice"
+
+        guest_mount = self.mount_b
+        guest_mount.umount_wait()
+
+        # emulate a old-fashioned subvolume in a custom group
+        createpath = os.path.join(".", "volumes", group, subvolume)
+        self.mount_a.run_shell(['mkdir', '-p', createpath])
+
+        # add required xattrs to subvolume
+        default_pool = self.mount_a.getfattr(".", "ceph.dir.layout.pool")
+        self.mount_a.setfattr(createpath, 'ceph.dir.layout.pool', default_pool)
+
+        mount_path = os.path.join("/", "volumes", group, subvolume)
+
+        # authorize guest authID read-write access to subvolume
+        key = self._fs_cmd("subvolume", "authorize", self.volname, subvolume, authid,
+                           "--group_name", group)
+
+        # guest authID should exist
+        existing_ids = [a['entity'] for a in self.auth_list()]
+        self.assertIn("client.{0}".format(authid), existing_ids)
+
+        # configure credentials for guest client
+        self._configure_guest_auth(guest_mount, authid, key)
+
+        # mount the subvolume, and write to it
+        guest_mount.mount(cephfs_mntpt=mount_path)
+        guest_mount.write_n_mb("data.bin", 1)
+
+        # authorize guest authID read access to subvolume
+        key = self._fs_cmd("subvolume", "authorize", self.volname, subvolume, authid,
+                           "--group_name", group, "--access_level", "r")
+
+        # guest client sees the change in access level to read only after a
+        # remount of the subvolume.
+        guest_mount.umount_wait()
+        guest_mount.mount(cephfs_mntpt=mount_path)
+
+        # read existing content of the subvolume
+        self.assertListEqual(guest_mount.ls(guest_mount.mountpoint), ["data.bin"])
+        # cannot write into read-only subvolume
+        with self.assertRaises(CommandFailedError):
+            guest_mount.write_n_mb("rogue.bin", 1)
+
+        # cleanup
+        guest_mount.umount_wait()
+        self._fs_cmd("subvolume", "deauthorize", self.volname, subvolume, authid,
+                     "--group_name", group)
+        # guest authID should no longer exist
+        existing_ids = [a['entity'] for a in self.auth_list()]
+        self.assertNotIn("client.{0}".format(authid), existing_ids)
+        self._fs_cmd("subvolume", "rm", self.volname, subvolume, "--group_name", group)
+        self._fs_cmd("subvolumegroup", "rm", self.volname, group)
+
+    def test_authorize_deauthorize_subvolume(self):
+        subvolume = self._generate_random_subvolume_name()
+        group = self._generate_random_group_name()
+        authid = "alice"
+
+        guest_mount = self.mount_b
+        guest_mount.umount_wait()
+
+        # create group
+        self._fs_cmd("subvolumegroup", "create", self.volname, group)
+
+        # create subvolume in group
+        self._fs_cmd("subvolume", "create", self.volname, subvolume, "--group_name", group)
+        mount_path = self._fs_cmd("subvolume", "getpath", self.volname, subvolume,
+                                  "--group_name", group).rstrip()
+
+        # authorize guest authID read-write access to subvolume
+        key = self._fs_cmd("subvolume", "authorize", self.volname, subvolume, authid,
+                           "--group_name", group)
+
+        # guest authID should exist
+        existing_ids = [a['entity'] for a in self.auth_list()]
+        self.assertIn("client.{0}".format(authid), existing_ids)
+
+        # configure credentials for guest client
+        self._configure_guest_auth(guest_mount, authid, key)
+
+        # mount the subvolume, and write to it
+        guest_mount.mount(cephfs_mntpt=mount_path)
+        guest_mount.write_n_mb("data.bin", 1)
+
+        # authorize guest authID read access to subvolume
+        key = self._fs_cmd("subvolume", "authorize", self.volname, subvolume, authid,
+                           "--group_name", group, "--access_level", "r")
+
+        # guest client sees the change in access level to read only after a
+        # remount of the subvolume.
+        guest_mount.umount_wait()
+        guest_mount.mount(cephfs_mntpt=mount_path)
+
+        # read existing content of the subvolume
+        self.assertListEqual(guest_mount.ls(guest_mount.mountpoint), ["data.bin"])
+        # cannot write into read-only subvolume
+        with self.assertRaises(CommandFailedError):
+            guest_mount.write_n_mb("rogue.bin", 1)
+
+        # cleanup
+        guest_mount.umount_wait()
+        self._fs_cmd("subvolume", "deauthorize", self.volname, subvolume, authid,
+                     "--group_name", group)
+        # guest authID should no longer exist
+        existing_ids = [a['entity'] for a in self.auth_list()]
+        self.assertNotIn("client.{0}".format(authid), existing_ids)
+        self._fs_cmd("subvolume", "rm", self.volname, subvolume, "--group_name", group)
+        self._fs_cmd("subvolumegroup", "rm", self.volname, group)
+
     def test_subvolume_pin_random(self):
         self.fs.set_max_mds(2)
         self.fs.wait_for_daemons()
@@ -1250,7 +1398,9 @@ class TestSubvolumes(TestVolumesHelper):
 
         usedsize = int(self.mount_a.getfattr(subvolpath, "ceph.dir.rbytes"))
         susedsize = int(self.mount_a.run_shell(['stat', '-c' '%s', subvolpath]).stdout.getvalue().strip())
-        self.assertEqual(usedsize, susedsize)
+        if isinstance(self.mount_a, FuseMount):
+            # kclient dir does not have size==rbytes
+            self.assertEqual(usedsize, susedsize)
 
         # shrink the subvolume
         nsize = usedsize // 2
@@ -1295,7 +1445,9 @@ class TestSubvolumes(TestVolumesHelper):
 
         usedsize = int(self.mount_a.getfattr(subvolpath, "ceph.dir.rbytes"))
         susedsize = int(self.mount_a.run_shell(['stat', '-c' '%s', subvolpath]).stdout.getvalue().strip())
-        self.assertEqual(usedsize, susedsize)
+        if isinstance(self.mount_a, FuseMount):
+            # kclient dir does not have size==rbytes
+            self.assertEqual(usedsize, susedsize)
 
         # shrink the subvolume
         nsize = usedsize // 2
@@ -3044,7 +3196,7 @@ class TestSubvolumeSnapshotClones(TestVolumesHelper):
 
         # add data pool
         new_pool = "new_pool"
-        self.fs.add_data_pool(new_pool)
+        newid = self.fs.add_data_pool(new_pool)
 
         # create subvolume
         self._fs_cmd("subvolume", "create", self.volname, subvolume)
@@ -3069,7 +3221,10 @@ class TestSubvolumeSnapshotClones(TestVolumesHelper):
 
         subvol_path = self._get_subvolume_path(self.volname, clone)
         desired_pool = self.mount_a.getfattr(subvol_path, "ceph.dir.layout.pool")
-        self.assertEqual(desired_pool, new_pool)
+        try:
+            self.assertEqual(desired_pool, new_pool)
+        except AssertionError:
+            self.assertEqual(int(desired_pool), newid) # old kernel returns id
 
         # remove subvolumes
         self._fs_cmd("subvolume", "rm", self.volname, subvolume)
@@ -3283,7 +3438,8 @@ class TestMisc(TestVolumesHelper):
     """Miscellaneous tests related to FS volume, subvolume group, and subvolume operations."""
     def test_connection_expiration(self):
         # unmount any cephfs mounts
-        self.mount_a.umount_wait()
+        for i in range(0, self.CLIENTS_REQUIRED):
+            self.mounts[i].umount_wait()
         sessions = self._session_list()
         self.assertLessEqual(len(sessions), 1) # maybe mgr is already mounted
 
@@ -3298,7 +3454,8 @@ class TestMisc(TestVolumesHelper):
 
     def test_mgr_eviction(self):
         # unmount any cephfs mounts
-        self.mount_a.umount_wait()
+        for i in range(0, self.CLIENTS_REQUIRED):
+            self.mounts[i].umount_wait()
         sessions = self._session_list()
         self.assertLessEqual(len(sessions), 1) # maybe mgr is already mounted
 

@@ -891,9 +891,9 @@ void OSDMonitor::update_from_paxos(bool *need_bootstrap)
 	// could be marked up *or* down, but we're too lazy to check which
 	last_osd_report.erase(osd_state.first);
       }
-      if (osd_state.second & CEPH_OSD_EXISTS) {
-	// could be created *or* destroyed, but we can safely drop it
-	osd_epochs.erase(osd_state.first);
+      if (osd_state.second & CEPH_OSD_OUT) {
+        // could be marked in *or* out, but we can safely drop it
+        osd_epochs.erase(osd_state.first);
       }
     }
   }
@@ -2133,6 +2133,19 @@ void OSDMonitor::count_metadata(const string& field, Formatter *f)
   f->close_section();
 }
 
+void OSDMonitor::get_versions(std::map<string, list<string> > &versions)
+{
+  for (int osd = 0; osd < osdmap.get_max_osd(); ++osd) {
+    if (osdmap.is_up(osd)) {
+      map<string,string> meta;
+      load_metadata(osd, meta, nullptr);
+      auto p = meta.find("ceph_version_short");
+      if (p == meta.end()) continue;
+      versions[p->second].push_back(string("osd.") + stringify(osd));
+    }
+  }
+}
+
 int OSDMonitor::get_osd_objectstore_type(int osd, string *type)
 {
   map<string, string> metadata;
@@ -2281,8 +2294,7 @@ epoch_t OSDMonitor::get_min_last_epoch_clean() const
   // also scan osd epochs
   // don't trim past the oldest reported osd epoch
   for (auto [osd, epoch] : osd_epochs) {
-    if (epoch < floor &&
-        osdmap.is_in(osd)) {
+    if (epoch < floor) {
       floor = epoch;
     }
   }

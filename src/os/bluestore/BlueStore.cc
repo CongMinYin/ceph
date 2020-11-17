@@ -646,6 +646,16 @@ public:
   virtual void upper_bound(const ghobject_t &oid) = 0;
   virtual void next() = 0;
 
+  virtual int cmp(const ghobject_t &oid) const = 0;
+
+  bool is_ge(const ghobject_t &oid) const {
+    return cmp(oid) >= 0;
+  }
+
+  bool is_lt(const ghobject_t &oid) const {
+    return cmp(oid) < 0;
+  }
+
 protected:
   KeyValueDB::Iterator m_it;
 };
@@ -687,6 +697,15 @@ public:
 
     m_it->next();
     get_oid();
+  }
+
+  int cmp(const ghobject_t &oid) const override {
+    ceph_assert(valid());
+
+    string key;
+    get_object_key(m_cct, oid, &key);
+
+    return m_it->key().compare(key);
   }
 
 private:
@@ -760,6 +779,18 @@ public:
     if (m_chunk_iter == m_chunk.end()) {
       get_next_chunk();
     }
+  }
+
+  int cmp(const ghobject_t &oid) const override {
+    ceph_assert(valid());
+
+    if (this->oid() < oid) {
+      return -1;
+    }
+    if (this->oid() > oid) {
+      return 1;
+    }
+    return 0;
   }
 
 private:
@@ -3888,8 +3919,7 @@ BlueStore::OnodeRef BlueStore::Collection::get_onode(
   }
   if (v.length() == 0) {
     ceph_assert(r == -ENOENT);
-    if (!store->cct->_conf->bluestore_debug_misc &&
-	!create)
+    if (!create)
       return OnodeRef();
 
     // new object, new onode
@@ -10256,14 +10286,14 @@ int BlueStore::_collection_list(
   }
   dout(20) << __func__ << " pend " << pend << dendl;
   while (true) {
-    if (!it->valid() || it->oid() >= pend) {
+    if (!it->valid() || it->is_ge(pend)) {
       if (!it->valid())
 	dout(20) << __func__ << " iterator not valid (end of db?)" << dendl;
       else
 	dout(20) << __func__ << " oid " << it->oid() << " >= " << pend << dendl;
       if (temp) {
 	if (end.hobj.is_temp()) {
-          if (it->valid() && it->oid() < coll_range_temp_end) {
+          if (it->valid() && it->is_lt(coll_range_temp_end)) {
             *pnext = it->oid();
             set_next = true;
           }
@@ -10279,7 +10309,7 @@ int BlueStore::_collection_list(
 	dout(30) << __func__ << " pend " << pend << dendl;
 	continue;
       }
-      if (it->valid() && it->oid() < coll_range_end) {
+      if (it->valid() && it->is_lt(coll_range_end)) {
         *pnext = it->oid();
         set_next = true;
       }
@@ -11152,7 +11182,7 @@ void BlueStore::BSPerfTracker::update_from_perfcounters(
 // and insert a new tuple corresponding to the new location of the object.  The
 // cleaner can now identify live objects within the zone <zone_num> by
 // enumerating all the keys starting with <zone_num> prefix.
-void BlueStore::zoned_update_cleaning_metadata(TransContext *txc) {
+void BlueStore::_zoned_update_cleaning_metadata(TransContext *txc) {
   for (const auto &[o, offsets] : txc->zoned_onode_to_offset_map) {
     std::string key;
     get_object_key(cct, o->oid, &key);
@@ -11160,15 +11190,15 @@ void BlueStore::zoned_update_cleaning_metadata(TransContext *txc) {
       if (offset > 0) {
 	bufferlist offset_bl;
 	encode(offset, offset_bl);
-        txc->t->set(zoned_get_prefix(offset), key, offset_bl);
+        txc->t->set(_zoned_get_prefix(offset), key, offset_bl);
       } else {
-        txc->t->rmkey(zoned_get_prefix(-offset), key);
+        txc->t->rmkey(_zoned_get_prefix(-offset), key);
       }
     }
   }
 }
 
-std::string BlueStore::zoned_get_prefix(uint64_t offset) {
+std::string BlueStore::_zoned_get_prefix(uint64_t offset) {
   uint64_t zone_num = offset / bdev->get_zone_size();
   std::string zone_key;
   _key_encode_u64(zone_num, &zone_key);
@@ -11262,7 +11292,7 @@ void BlueStore::_txc_finalize_kv(TransContext *txc, KeyValueDB::Transaction t)
   }
 
   if (bdev->is_smr()) {
-    zoned_update_cleaning_metadata(txc);
+    _zoned_update_cleaning_metadata(txc);
   }
 
   _txc_update_store_statfs(txc);
