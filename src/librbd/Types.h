@@ -52,6 +52,16 @@ enum {
 
   l_librbd_invalidate_cache,
 
+  l_librbd_image_dispatch_latency,
+  l_librbd_ioc_msg,
+  l_librbd_ioc_rtt,
+  l_librbd_ioc_rd_file,
+  l_librbd_ioc_rd_file_bytes,
+  l_librbd_ioc_rd_file_latency,
+
+  l_librbd_ioc_rd_rados,
+  l_librbd_ioc_rd_parent,
+
   l_librbd_opened_time,
   l_librbd_lock_acquired_time,
 

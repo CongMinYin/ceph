@@ -90,13 +90,14 @@ bool ParentCacheObjectDispatch<I>::read(
     return false;
   }
 
+  auto now = coarse_mono_clock::now();
   CacheGenContextURef ctx = make_gen_lambda_context<ObjectCacheRequest*,
                                      std::function<void(ObjectCacheRequest*)>>
    ([this, extents, dispatch_result, on_dispatched, object_no, io_context,
-     &parent_trace]
+     &parent_trace, now]
    (ObjectCacheRequest* ack) {
       handle_read_cache(ack, object_no, extents, io_context, parent_trace,
-                        dispatch_result, on_dispatched);
+                        dispatch_result, on_dispatched, now);
   });
 
   m_cache_client->lookup_object(m_image_ctx->data_ctx.get_namespace(),
@@ -110,19 +111,27 @@ template <typename I>
 void ParentCacheObjectDispatch<I>::handle_read_cache(
      ObjectCacheRequest* ack, uint64_t object_no, io::ReadExtents* extents,
      IOContext io_context, const ZTracer::Trace &parent_trace,
-     io::DispatchResult* dispatch_result, Context* on_dispatched) {
+     io::DispatchResult* dispatch_result, Context* on_dispatched,
+     coarse_mono_time start_time) {
   auto cct = m_image_ctx->cct;
   ldout(cct, 20) << dendl;
+
+  ceph::timespan elapsed;
+  elapsed = coarse_mono_clock::now() - start_time;
+  m_image_ctx->perfcounter->tinc(l_librbd_ioc_rtt, elapsed);
+  m_image_ctx->perfcounter->inc(l_librbd_ioc_msg);
 
   if(ack->type != RBDSC_READ_REPLY) {
     // go back to read rados
     *dispatch_result = io::DISPATCH_RESULT_CONTINUE;
     on_dispatched->complete(0);
+    m_image_ctx->perfcounter->inc(l_librbd_ioc_rd_rados);
     return;
   }
 
   ceph_assert(ack->type == RBDSC_READ_REPLY);
   std::string file_path = ((ObjectCacheReadReplyData*)ack)->cache_path;
+  // I doesn't know how to get in this logic
   if (file_path.empty()) {
     auto ctx = new LambdaContext(
       [this, dispatch_result, on_dispatched](int r) {
@@ -136,9 +145,13 @@ void ParentCacheObjectDispatch<I>::handle_read_cache(
     m_plugin_api.read_parent(m_image_ctx, object_no, extents,
                              io_context->read_snap().value_or(CEPH_NOSNAP),
                              parent_trace, ctx);
+
+    m_image_ctx->perfcounter->inc(l_librbd_ioc_rd_parent);
     return;
   }
 
+  coarse_mono_time read_start_time;
+  read_start_time = coarse_mono_clock::now();
   int read_len = 0;
   for (auto& extent: *extents) {
     // try to read from parent image cache
@@ -160,6 +173,10 @@ void ParentCacheObjectDispatch<I>::handle_read_cache(
 
     read_len += r;
   }
+  elapsed = coarse_mono_clock::now() - read_start_time;
+  m_image_ctx->perfcounter->tinc(l_librbd_ioc_rd_file_latency, elapsed);
+  m_image_ctx->perfcounter->inc(l_librbd_ioc_rd_file);
+  m_image_ctx->perfcounter->inc(l_librbd_ioc_rd_file_bytes, read_len);
 
   *dispatch_result = io::DISPATCH_RESULT_COMPLETE;
   on_dispatched->complete(read_len);

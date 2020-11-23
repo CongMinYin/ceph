@@ -401,6 +401,10 @@ void ImageReadRequest<I>::send_request() {
   AioCompletion *aio_comp = this->m_aio_comp;
   aio_comp->read_result.set_image_extents(image_extents);
 
+  ceph::timespan elapsed;
+  elapsed = coarse_mono_clock::now() - aio_comp->start_time;
+  image_ctx.perfcounter->tinc(l_librbd_image_dispatch_latency, elapsed);
+
   // issue the requests
   aio_comp->set_request_count(object_extents.size());
   for (auto &oe : object_extents) {

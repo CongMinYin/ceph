@@ -285,6 +285,22 @@ librados::IoCtx duplicate_io_ctx(librados::IoCtx& io_ctx) {
     plb.add_u64_counter(l_librbd_readahead_bytes, "readahead_bytes", "Data size in read ahead", NULL, 0, unit_t(UNIT_BYTES));
     plb.add_u64_counter(l_librbd_invalidate_cache, "invalidate_cache", "Cache invalidates");
 
+    plb.add_time_avg(l_librbd_image_dispatch_latency, "image_dispatch_latency",
+                      "image dispatch latency ", "idl", perf_prio);
+    plb.add_u64_counter(l_librbd_ioc_msg, "ioc_msg",
+                        "send message from hook to ioc daemon", "i", perf_prio);
+    plb.add_time_avg(l_librbd_ioc_rtt, "ico_msg_rtt", "RTT between hook and daemon ",
+                     "irtt", perf_prio);
+
+    plb.add_u64_counter(l_librbd_ioc_rd_file, "ioc_rd_file", "IOC_Reads_file", "irf", perf_prio);
+    plb.add_u64_counter(l_librbd_ioc_rd_file_bytes, "ioc_rd_file_bytes", "Data size in IOC reads file",
+                        "irfb", perf_prio, unit_t(UNIT_BYTES));
+    plb.add_time_avg(l_librbd_ioc_rd_file_latency, "rd_file_latency", "Latency of IOC reads file",
+                     "irfl", perf_prio);
+
+    plb.add_u64_counter(l_librbd_ioc_rd_rados, "ioc_rd_rados", "IOC_Reads_cluster", "irr", perf_prio);
+    plb.add_u64_counter(l_librbd_ioc_rd_parent, "ioc_rd_parent", "IOC_Reads_parent", "irp", perf_prio);
+
     plb.add_time(l_librbd_opened_time, "opened_time", "Opened time",
                  "ots", perf_prio);
     plb.add_time(l_librbd_lock_acquired_time, "lock_acquired_time",
