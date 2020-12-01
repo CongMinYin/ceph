@@ -21,28 +21,13 @@ set(libos_srcs
 
 if(WITH_BLUESTORE)
   list(APPEND libos_srcs
-    bluestore/Allocator.cc
-    bluestore/BitmapFreelistManager.cc
     bluestore/BlueFS.cc
     bluestore/bluefs_types.cc
     bluestore/BlueRocksEnv.cc
     bluestore/BlueStore.cc
     bluestore/bluestore_types.cc
-    bluestore/fastbmap_allocator_impl.cc
-    bluestore/FreelistManager.cc
-    bluestore/StupidAllocator.cc
-    bluestore/BitmapAllocator.cc
-    bluestore/AvlAllocator.cc
-    bluestore/HybridAllocator.cc
   )
 endif(WITH_BLUESTORE)
-
-if(WITH_ZBD)
-  list(APPEND libos_srcs
-    bluestore/zoned_types.cc
-    bluestore/ZonedFreelistManager.cc
-    bluestore/ZonedAllocator.cc)
-endif()
 
 if(WITH_FUSE)
   list(APPEND libos_srcs
@@ -65,7 +50,7 @@ if(HAVE_LIBZFS)
 endif()
 
 add_library(os STATIC ${libos_srcs})
-target_link_libraries(os blk)
+target_link_libraries(os blk alloc)
 
 target_link_libraries(os heap_profiler kv)
 

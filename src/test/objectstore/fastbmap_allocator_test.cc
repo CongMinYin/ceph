@@ -4,7 +4,7 @@
 #include <iostream>
 #include <gtest/gtest.h>
 
-#include "os/bluestore/fastbmap_allocator_impl.h"
+#include "alloc/fastbmap_allocator_impl.h"
 
 class TestAllocatorLevel01 : public AllocatorLevel01Loose
 {

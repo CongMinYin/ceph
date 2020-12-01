@@ -4,7 +4,7 @@
 #include <iostream>
 #include <gtest/gtest.h>
 
-#include "os/bluestore/HybridAllocator.h"
+#include "alloc/HybridAllocator.h"
 
 class TestHybridAllocator : public HybridAllocator {
 public:

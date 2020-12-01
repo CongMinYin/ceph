@@ -11,7 +11,7 @@
 #endif
 #include "common/debug.h"
 #include "common/admin_socket.h"
-#define dout_subsys ceph_subsys_bluestore
+#define dout_subsys ceph_subsys_alloc
 
 using std::string;
 using std::to_string;

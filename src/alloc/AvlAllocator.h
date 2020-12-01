@@ -7,7 +7,7 @@
 #include <boost/intrusive/avl_set.hpp>
 
 #include "Allocator.h"
-#include "os/bluestore/bluestore_types.h"
+#include "Types.h"
 #include "include/mempool.h"
 
 struct range_seg_t {

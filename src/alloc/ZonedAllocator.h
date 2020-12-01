@@ -8,8 +8,8 @@
 // Copyright (C) 2020 Abutalib Aghayev
 //
 
-#ifndef CEPH_OS_BLUESTORE_ZONEDALLOCATOR_H
-#define CEPH_OS_BLUESTORE_ZONEDALLOCATOR_H
+#ifndef CEPH_ALLOC_ZONEDALLOCATOR_H
+#define CEPH_ALLOC_ZONEDALLOCATOR_H
 
 #include <mutex>
 
@@ -18,7 +18,7 @@
 #include "include/btree_map.h"
 #include "include/interval_set.h"
 #include "include/mempool.h"
-#include "bluestore_types.h"
+#include "Types.h"
 #include "zoned_types.h"
 
 class ZonedAllocator : public Allocator {

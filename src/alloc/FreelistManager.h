@@ -1,15 +1,15 @@
 // -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
 // vim: ts=8 sw=2 smarttab
 
-#ifndef CEPH_OS_BLUESTORE_FREELISTMANAGER_H
-#define CEPH_OS_BLUESTORE_FREELISTMANAGER_H
+#ifndef CEPH_ALLOC_FREELISTMANAGER_H
+#define CEPH_ALLOC_FREELISTMANAGER_H
 
 #include <string>
 #include <vector>
 #include <mutex>
 #include <ostream>
 #include "kv/KeyValueDB.h"
-#include "bluestore_types.h"
+#include "Types.h"
 #include "zoned_types.h"
 
 class FreelistManager {
