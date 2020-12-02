@@ -216,18 +216,19 @@ void WriteLogOperation::complete(int result) {
 }
 
 #ifdef WITH_RBD_RWL
-void WriteLogOperation::copy_bl_to_pmem_buffer(std::vector<WriteBufferAllocation>::iterator allocation) {
+void WriteLogOperation::copy_bl_to_pmem_buffer(
+    ReplicatedDataPool* log_pool, std::vector<WriteBufferAllocation>::iterator allocation) {
   /* operation is a shared_ptr, so write_op is only good as long as operation is in scope */
   bufferlist::iterator i(&bl);
   m_perfcounter->inc(l_librbd_pwl_log_op_bytes, log_entry->write_bytes());
   ldout(m_cct, 20) << bl << dendl;
-  log_entry->init_pmem_buffer(allocation);
+  log_entry->init_pmem_buffer(log_pool, allocation);
   i.copy((unsigned)log_entry->write_bytes(), (char*)log_entry->pmem_buffer);
 }
 
-void WriteLogOperation::flush_pmem_buf_to_cache(PMEMobjpool *log_pool) {
+void WriteLogOperation::flush_pmem_buf_to_cache(io::Extents& extents) {
   buf_persist_time = ceph_clock_now();
-  pmemobj_flush(log_pool, log_entry->pmem_buffer, log_entry->write_bytes());
+  extents.push_back(io::Extent(log_entry->data_offset(), log_entry->write_bytes()));
 }
 #endif
 

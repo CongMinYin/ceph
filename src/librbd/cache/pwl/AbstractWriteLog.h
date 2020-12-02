@@ -30,6 +30,10 @@ namespace cache {
 
 namespace pwl {
 
+#ifdef WITH_RBD_RWL
+  class ReplicatedDataPool;
+#endif
+
 class GenericLogEntry;
 class GenericWriteLogEntry;
 class SyncPointLogEntry;
@@ -112,6 +116,9 @@ public:
   using C_CompAndWriteRequestT = pwl::C_CompAndWriteRequest<This>;
 
   CephContext * get_context();
+#ifdef WITH_RBD_RWL
+  virtual ReplicatedDataPool* get_log_pool() {return nullptr;}
+#endif
   void release_guarded_request(BlockGuardCell *cell);
   void release_write_lanes(C_BlockIORequestT *req);
   virtual bool alloc_resources(C_BlockIORequestT *req) = 0;

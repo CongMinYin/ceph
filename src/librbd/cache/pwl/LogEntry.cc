@@ -5,6 +5,10 @@
 #include "LogEntry.h"
 #include "librbd/cache/ImageWriteback.h"
 
+#ifdef WITH_RBD_RWL
+#include "librbd/cache/pwl/ReplicatedDataPool.h"
+#endif
+
 #define dout_subsys ceph_subsys_rbd_pwl
 #undef dout_prefix
 #define dout_prefix *_dout << "librbd::cache::pwl::LogEntry: " << this << " " \
@@ -74,10 +78,10 @@ std::ostream &operator<<(std::ostream &os,
 }
 
 #ifdef WITH_RBD_RWL
-void WriteLogEntry::init_pmem_buffer(std::vector<WriteBufferAllocation>::iterator allocation) {
-  ram_entry.write_data = allocation->buffer_oid;
-  ceph_assert(!TOID_IS_NULL(ram_entry.write_data));
-  pmem_buffer = D_RW(ram_entry.write_data);
+void WriteLogEntry::init_pmem_buffer(
+    ReplicatedDataPool* log_pool, std::vector<WriteBufferAllocation>::iterator allocation) {
+  ram_entry.write_data_pos = allocation->buffer_off;
+  pmem_buffer = log_pool->get_data_buffer(ram_entry.write_data_pos);
 }
 #endif
 

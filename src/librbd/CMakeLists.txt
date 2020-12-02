@@ -280,6 +280,7 @@ if(WITH_RBD_RWL OR WITH_RBD_SSD_CACHE)
     if(WITH_RBD_RWL)
       set(rbd_plugin_pwl_srcs
         ${rbd_plugin_pwl_srcs}
+	cache/pwl/ReplicatedDataPool.cc
         cache/pwl/ReplicatedWriteLog.cc)
     endif()
 
@@ -294,7 +295,8 @@ if(WITH_RBD_RWL OR WITH_RBD_SSD_CACHE)
   if(WITH_RBD_RWL)
     target_link_libraries(librbd_plugin_pwl_cache
       PUBLIC pmem::pmemobj
-      PRIVATE pmem::pmem)
+      PRIVATE pmem::pmem
+      PRIVATE alloc)
   endif()
 
   set_target_properties(librbd_plugin_pwl_cache PROPERTIES
