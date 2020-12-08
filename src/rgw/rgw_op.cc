@@ -888,7 +888,7 @@ int RGWGetObj::verify_permission(optional_yield y)
 {
   s->object->set_atomic(s->obj_ctx);
 
-  if (get_data) {
+  if (prefetch_data()) {
     s->object->set_prefetch_data(s->obj_ctx);
   }
 
@@ -2412,7 +2412,7 @@ void RGWGetUsage::execute(optional_yield y)
 
   RGWUsageIter usage_iter;
   
-  while (is_truncated) {
+  while (s->bucket && is_truncated) {
     op_ret = s->bucket->read_usage(start_epoch, end_epoch, max_entries, &is_truncated,
 				   usage_iter, usage);
     if (op_ret == -ENOENT) {
