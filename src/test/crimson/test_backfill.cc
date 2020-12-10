@@ -17,7 +17,6 @@
 #include "common/hobject.h"
 #include "crimson/osd/backfill_state.h"
 #include "osd/recovery_types.h"
-#include "test/crimson/test_backfill_facades.h"
 
 
 // The sole purpose is to convert from the string representation.
@@ -100,7 +99,8 @@ class BackfillFixture : public crimson::osd::BackfillState::BackfillListener {
 
   FakePrimary backfill_source;
   std::map<pg_shard_t, FakeReplica> backfill_targets;
-
+  std::map<pg_shard_t,
+           std::vector<std::pair<hobject_t, eversion_t>>> enqueued_drops;
   std::deque<
     boost::intrusive_ptr<
       const boost::statechart::event_base>> events_to_dispatch;
@@ -131,6 +131,8 @@ class BackfillFixture : public crimson::osd::BackfillState::BackfillListener {
     const pg_shard_t& target,
     const hobject_t& obj,
     const eversion_t& v) override;
+
+  void maybe_flush() override;
 
   void update_peers_last_backfill(
     const hobject_t& new_last_backfill) override;
@@ -172,11 +174,19 @@ struct BackfillFixture::PeeringFacade
   : public crimson::osd::BackfillState::PeeringFacade {
   FakePrimary& backfill_source;
   std::map<pg_shard_t, FakeReplica>& backfill_targets;
+  // sorry, this is duplicative but that's the interface
+  std::set<pg_shard_t> backfill_targets_as_set;
 
   PeeringFacade(FakePrimary& backfill_source,
                 std::map<pg_shard_t, FakeReplica>& backfill_targets)
     : backfill_source(backfill_source),
       backfill_targets(backfill_targets) {
+    std::transform(
+      std::begin(backfill_targets), std::end(backfill_targets),
+      std::inserter(backfill_targets_as_set, std::end(backfill_targets_as_set)),
+      [](auto pair) {
+        return pair.first;
+      });
   }
 
   hobject_t earliest_backfill() const override {
@@ -186,15 +196,8 @@ struct BackfillFixture::PeeringFacade
     }
     return e;
   }
-  std::set<pg_shard_t> get_backfill_targets() const override {
-    std::set<pg_shard_t> result;
-    std::transform(
-      std::begin(backfill_targets), std::end(backfill_targets),
-      std::inserter(result, std::end(result)),
-      [](auto pair) {
-        return pair.first;
-      });
-    return result;
+  const std::set<pg_shard_t>& get_backfill_targets() const override {
+    return backfill_targets_as_set;
   }
   const hobject_t& get_peer_last_backfill(pg_shard_t peer) const override {
     return backfill_targets.at(peer).last_backfill;
@@ -205,8 +208,9 @@ struct BackfillFixture::PeeringFacade
   const eversion_t& get_log_tail() const override {
     return backfill_source.log_tail;
   }
-  template <class... Args>
-  void scan_log_after(Args&&... args) const {
+
+  void scan_log_after(eversion_t, scan_log_func_t) const override {
+    /* NOP */
   }
 
   bool is_backfill_target(pg_shard_t peer) const override {
@@ -250,11 +254,8 @@ void BackfillFixture::request_replica_scan(
   const hobject_t& begin,
   const hobject_t& end)
 {
-  std::cout << __func__ << std::endl;
-
   BackfillInterval bi;
   bi.end = backfill_targets.at(target).store.list(begin, [&bi](auto kv) {
-    std::cout << kv << std::endl;
     bi.objects.insert(std::move(kv));
   });
   bi.begin = begin;
@@ -266,11 +267,8 @@ void BackfillFixture::request_replica_scan(
 void BackfillFixture::request_primary_scan(
   const hobject_t& begin)
 {
-  std::cout << __func__ << std::endl;
-
   BackfillInterval bi;
   bi.end = backfill_source.store.list(begin, [&bi](auto kv) {
-    std::cout << kv << std::endl;
     bi.objects.insert(std::move(kv));
   });
   bi.begin = begin;
@@ -294,18 +292,26 @@ void BackfillFixture::enqueue_drop(
   const hobject_t& obj,
   const eversion_t& v)
 {
-  backfill_targets.at(target).store.drop(obj, v);
+  enqueued_drops[target].emplace_back(obj, v);
+}
+
+void BackfillFixture::maybe_flush()
+{
+  for (const auto& [target, versioned_objs] : enqueued_drops) {
+    for (const auto& [obj, v] : versioned_objs) {
+      backfill_targets.at(target).store.drop(obj, v);
+    }
+  }
+  enqueued_drops.clear();
 }
 
 void BackfillFixture::update_peers_last_backfill(
   const hobject_t& new_last_backfill)
 {
-  std::cout << __func__ << std::endl;
 }
 
 bool BackfillFixture::budget_available() const
 {
-  std::cout << __func__ << std::endl;
   return true;
 }
 
