@@ -13,7 +13,7 @@ from ceph.deployment.drive_group import DriveGroupSpec, DeviceSelection
 from ceph.deployment.service_spec import PlacementSpec, ServiceSpec
 
 from mgr_util import format_bytes, to_pretty_timedelta, format_dimless
-from mgr_module import MgrModule, HandleCommandResult
+from mgr_module import MgrModule, HandleCommandResult, Option
 
 from ._interface import OrchestratorClientMixin, DeviceLightLoc, _cli_read_command, \
     raise_if_exception, _cli_write_command, TrivialReadCompletion, OrchestratorError, \
@@ -135,15 +135,14 @@ def preview_table_services(data):
 class OrchestratorCli(OrchestratorClientMixin, MgrModule,
                       metaclass=CLICommandMeta):
     MODULE_OPTIONS = [
-        {
-            'name': 'orchestrator',
-            'type': 'str',
-            'default': None,
-            'desc': 'Orchestrator backend',
-            'enum_allowed': ['cephadm', 'rook',
-                             'test_orchestrator'],
-            'runtime': True,
-        },
+        Option(
+            'orchestrator',
+            type='str',
+            default=None,
+            desc='Orchestrator backend',
+            enum_allowed=['cephadm', 'rook', 'test_orchestrator'],
+            runtime=True,
+        )
     ]
     NATIVE_OPTIONS = []  # type: List[dict]
 
@@ -633,38 +632,38 @@ class OrchestratorCli(OrchestratorClientMixin, MgrModule,
 usage:
   ceph orch apply osd -i <json_file/yaml_file> [--dry-run]
   ceph orch apply osd --all-available-devices [--dry-run] [--unmanaged]
-  
+
 Restrictions:
-  
+
   Mutexes:
   * -i, --all-available-devices
   * -i, --unmanaged (this would overwrite the osdspec loaded from a file)
-  
+
   Parameters:
-  
+
   * --unmanaged
      Only works with --all-available-devices.
-  
+
 Description:
-  
+
   * -i
     An inbuf object like a file or a json/yaml blob containing a valid OSDSpec
-    
+
   * --all-available-devices
     The most simple OSDSpec there is. Takes all as 'available' marked devices
     and creates standalone OSDs on them.
-    
+
   * --unmanaged
     Set a the unmanaged flag for all--available-devices (default is False)
-    
+
 Examples:
 
    # ceph orch apply osd -i <file.yml|json>
-   
+
    Applies one or more OSDSpecs found in <file>
-   
+
    # ceph orch osd apply --all-available-devices --unmanaged=true
-   
+
    Creates and applies simple OSDSpec with the unmanaged flag set to <true>
 """
 
@@ -679,34 +678,36 @@ Examples:
         if inbuf:
             if unmanaged is not None:
                 return HandleCommandResult(-errno.EINVAL, stderr=usage)
+
             try:
-                drivegroups = yaml.safe_load_all(inbuf)
+                drivegroups = [_dg for _dg in yaml.safe_load_all(inbuf)]
+            except yaml.scanner.ScannerError as e:
+                msg = f"Invalid YAML received : {str(e)}"
+                self.log.exception(e)
+                return HandleCommandResult(-errno.EINVAL, stderr=msg)
 
-                dg_specs = []
-                for dg in drivegroups:
-                    spec = DriveGroupSpec.from_json(dg)
-                    if dry_run:
-                        spec.preview_only = True
-                    dg_specs.append(spec)
+            dg_specs = []
+            for dg in drivegroups:
+                spec = DriveGroupSpec.from_json(dg)
+                if dry_run:
+                    spec.preview_only = True
+                dg_specs.append(spec)
 
-                completion = self.apply(dg_specs)
+            completion = self.apply(dg_specs)
+            self._orchestrator_wait([completion])
+            raise_if_exception(completion)
+            out = completion.result_str()
+            if dry_run:
+                completion = self.plan(dg_specs)
                 self._orchestrator_wait([completion])
                 raise_if_exception(completion)
-                out = completion.result_str()
-                if dry_run:
-                    completion = self.plan(dg_specs)
-                    self._orchestrator_wait([completion])
-                    raise_if_exception(completion)
-                    data = completion.result
-                    if format == 'plain':
-                        out = preview_table_osd(data)
-                    else:
-                        out = to_format(data, format, many=True, cls=None)
-                return HandleCommandResult(stdout=out)
+                data = completion.result
+                if format == 'plain':
+                    out = preview_table_osd(data)
+                else:
+                    out = to_format(data, format, many=True, cls=None)
+            return HandleCommandResult(stdout=out)
 
-            except ValueError as e:
-                msg = 'Failed to read JSON/YAML input: {}'.format(str(e)) + usage
-                return HandleCommandResult(-errno.EINVAL, stderr=msg)
         if all_available_devices:
             if unmanaged is None:
                 unmanaged = False

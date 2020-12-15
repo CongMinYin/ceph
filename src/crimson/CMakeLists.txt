@@ -78,7 +78,6 @@ add_library(crimson-common STATIC
   ${PROJECT_SOURCE_DIR}/src/common/Graylog.cc
   ${PROJECT_SOURCE_DIR}/src/common/ostream_temp.cc
   ${PROJECT_SOURCE_DIR}/src/common/LogEntry.cc
-  ${PROJECT_SOURCE_DIR}/src/common/SubProcess.cc
   ${PROJECT_SOURCE_DIR}/src/common/TextTable.cc
   ${PROJECT_SOURCE_DIR}/src/common/Thread.cc
   ${PROJECT_SOURCE_DIR}/src/common/PluginRegistry.cc
@@ -184,3 +183,4 @@ target_link_libraries(crimson
 add_subdirectory(admin)
 add_subdirectory(os)
 add_subdirectory(osd)
+add_subdirectory(tools)

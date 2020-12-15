@@ -2,7 +2,7 @@ add_library(crimson-seastore STATIC
   cached_extent.cc
   seastore_types.cc
   segment_manager/ephemeral.cc
-  segment_manager.cc
+  segment_manager/block.cc
   transaction_manager.cc
   journal.cc
   cache.cc
@@ -34,6 +34,4 @@ add_library(crimson-seastore STATIC
   ../../../test/crimson/seastore/test_block.cc
 	)
 target_link_libraries(crimson-seastore
-  crimson
-  crimson-os)
-
+  crimson)
