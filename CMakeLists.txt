@@ -375,6 +375,11 @@ if(WITH_BLKIN)
   include_directories(SYSTEM src/blkin/blkin-lib)
 endif(WITH_BLKIN)
 
+option(WITH_JAEGER "Enable jaegertracing and it's dependent libraries" OFF)
+if(WITH_JAEGER)
+  set(HAVE_JAEGER TRUE)
+endif()
+
 #option for RGW
 option(WITH_RADOSGW "Rados Gateway is enabled" ON)
 option(WITH_RADOSGW_FCGI_FRONTEND "Rados Gateway's FCGI frontend is enabled" OFF)
@@ -382,6 +387,7 @@ option(WITH_RADOSGW_BEAST_FRONTEND "Rados Gateway's Beast frontend is enabled" O
 option(WITH_RADOSGW_BEAST_OPENSSL "Rados Gateway's Beast frontend uses OpenSSL" ON)
 option(WITH_RADOSGW_AMQP_ENDPOINT "Rados Gateway's pubsub support for AMQP push endpoint" ON)
 option(WITH_RADOSGW_KAFKA_ENDPOINT "Rados Gateway's pubsub support for Kafka push endpoint" ON)
+option(WITH_RADOSGW_LUA_PACKAGES "Rados Gateway's support for dynamically adding lua packagess" ON)
 
 if(WITH_RADOSGW)
   find_package(EXPAT REQUIRED)
@@ -579,6 +585,10 @@ if(WITH_MGR)
 endif()
 if(WITH_SEASTAR)
   list(APPEND BOOST_COMPONENTS filesystem timer)
+endif()
+
+if(WITH_RADOSGW AND WITH_RADOSGW_LUA_PACKAGES)
+  list(APPEND BOOST_COMPONENTS filesystem)
 endif()
 
 set(Boost_USE_MULTITHREADED ON)
