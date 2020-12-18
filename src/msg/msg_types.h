@@ -46,6 +46,7 @@ public:
   static const int TYPE_OSD = CEPH_ENTITY_TYPE_OSD;
   static const int TYPE_CLIENT = CEPH_ENTITY_TYPE_CLIENT;
   static const int TYPE_MGR = CEPH_ENTITY_TYPE_MGR;
+  static const int TYPE_REPLICA = CEPH_ENTITY_TYPE_REPLICA;
 
   static const int64_t NEW = -1;
 
@@ -61,6 +62,7 @@ public:
   static entity_name_t OSD(int64_t i=NEW) { return entity_name_t(TYPE_OSD, i); }
   static entity_name_t CLIENT(int64_t i=NEW) { return entity_name_t(TYPE_CLIENT, i); }
   static entity_name_t MGR(int64_t i=NEW) { return entity_name_t(TYPE_MGR, i); }
+  static entity_name_t REPLICA(int64_t i=NEW) { return entity_name_t(TYPE_REPLICA, i); }
 
   int64_t num() const { return _num; }
   int type() const { return _type; }
@@ -75,6 +77,7 @@ public:
   bool is_osd() const { return type() == TYPE_OSD; }
   bool is_mon() const { return type() == TYPE_MON; }
   bool is_mgr() const { return type() == TYPE_MGR; }
+  bool is_replica() const { return type() == TYPE_REPLICA; }
 
   operator ceph_entity_name() const {
     ceph_entity_name n = { _type, init_le64(_num) };
@@ -103,6 +106,9 @@ public:
     } else if (strstr(start, "mgr.") == start) {
       _type = TYPE_MGR;
       start += 4;
+    } else if (strstr(start, "replica.") == start) {
+      _type = TYPE_REPLICA;
+      start += 8; // sizeof("replica.")
     } else {
       return false;
     }

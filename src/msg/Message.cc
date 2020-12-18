@@ -216,6 +216,10 @@
 #include "messages/MOSDPGUpdateLogMissing.h"
 #include "messages/MOSDPGUpdateLogMissingReply.h"
 
+#include "messages/MReplicaDaemonMap.h"
+#include "messages/MReplicaDaemonBlink.h"
+#include "messages/MMonGetReplicaDaemonMap.h"
+
 #ifdef WITH_BLKIN
 #include "Messenger.h"
 #endif
@@ -915,6 +919,20 @@ Message *decode_message(CephContext *cct,
   case MSG_MON_HEALTH_CHECKS:
     m = make_message<MMonHealthChecks>();
     break;
+
+#if defined(WITH_CACHE_REPLICA)
+  case CEPH_MSG_REPLICADAEMON_MAP:
+    m = make_message<MReplicaDaemonMap>();
+    break;
+
+  case MSG_REPLICADAEMON_BLINK:
+    m = make_message<MReplicaDaemonBlink>();
+    break;
+
+  case CEPH_MSG_MON_GET_REPLICADAEMONMAP:
+    m = make_message<MMonGetReplicaDaemonMap>();
+    break;
+#endif
 
     // -- simple messages without payload --
 
