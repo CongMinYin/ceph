@@ -788,7 +788,7 @@ std::vector<Option> get_global_options() {
     .set_description("Enable named (or all with '*') experimental features that may be untested, dangerous, and/or cause permanent data loss"),
 
     Option("plugin_dir", Option::TYPE_STR, Option::LEVEL_ADVANCED)
-    .set_default(CEPH_PKGLIBDIR)
+    .set_default(CEPH_LIBDIR)
     .set_flag(Option::FLAG_STARTUP)
     .add_service({"mon", "osd"})
     .set_description("Base directory for dynamically loaded plugins"),
@@ -7755,7 +7755,7 @@ static std::vector<Option> get_rbd_options() {
     .set_description("default snapshot quiesce mode"),
 
     Option("rbd_plugins", Option::TYPE_STR, Option::LEVEL_ADVANCED)
-    .set_default("")
+    .set_default("pwl_cache")
     .set_description("comma-delimited list of librbd plugins to enable"),
 
     Option("rbd_config_pool_override_update_timestamp", Option::TYPE_UINT,
