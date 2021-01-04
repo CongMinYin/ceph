@@ -6,10 +6,6 @@
 
 #include "acconfig.h"
 
-#ifdef WITH_RBD_RWL
-#include "libpmemobj.h"
-#endif
-
 #include <vector>
 #include "librbd/BlockGuard.h"
 #include "librbd/io/Types.h"
@@ -106,8 +102,8 @@ enum {
   l_librbd_pwl_nowait_wr_caller_latency,  // average req completion (to caller) latency
 
   /* Log operation times */
-  l_librbd_pwl_log_op_alloc_t,      // elapsed time of pmemobj_reserve()
-  l_librbd_pwl_log_op_alloc_t_hist, // Histogram of elapsed time of pmemobj_reserve()
+  l_librbd_pwl_log_op_alloc_t,      // elapsed time of allocation
+  l_librbd_pwl_log_op_alloc_t_hist, // Histogram of elapsed time of allocation
 
   l_librbd_pwl_log_op_dis_to_buf_t, // dispatch to buffer persist elapsed time
   l_librbd_pwl_log_op_dis_to_app_t, // dispatch to log append elapsed time
@@ -198,26 +194,12 @@ public:
   void add(Context* ctx);
 };
 
-/* Pmem structures */
-#ifdef WITH_RBD_RWL
-POBJ_LAYOUT_BEGIN(rbd_pwl);
-POBJ_LAYOUT_ROOT(rbd_pwl, struct WriteLogPoolRoot);
-POBJ_LAYOUT_TOID(rbd_pwl, uint8_t);
-POBJ_LAYOUT_TOID(rbd_pwl, struct WriteLogPmemEntry);
-POBJ_LAYOUT_END(rbd_pwl);
-#endif
-
 struct WriteLogPmemEntry {
   uint64_t sync_gen_number = 0;
   uint64_t write_sequence_number = 0;
   uint64_t image_offset_bytes;
   uint64_t write_bytes;
-  #ifdef WITH_RBD_RWL
-  TOID(uint8_t) write_data;
-  #endif
-  #ifdef WITH_RBD_SSD_CACHE
-  uint64_t write_data_pos; /* SSD data offset */
-  #endif
+  uint64_t write_data_pos; /* data offset */
   union {
     uint8_t flags;
     struct {
@@ -278,17 +260,11 @@ struct WriteLogPmemEntry {
 };
 
 struct WriteLogPoolRoot {
+  uint64_t layout_version = 0;
   #ifdef WITH_RBD_RWL
-  union {
-    struct {
-      uint8_t layout_version;    /* Version of this structure (RWL_POOL_VERSION) */
-    };
-    uint64_t _u64;
-  } header;
-  TOID(struct WriteLogPmemEntry) log_entries;   /* contiguous array of log entries */
+  uint64_t log_entries_pos; /* start offset of contiguous array of log entries */ 
   #endif
   #ifdef WITH_RBD_SSD_CACHE
-  uint64_t layout_version = 0;
   uint64_t cur_sync_gen = 0;
   #endif
   uint64_t pool_size;
@@ -321,8 +297,7 @@ struct WriteLogPoolRoot {
 struct WriteBufferAllocation {
   unsigned int allocation_size = 0;
   #ifdef WITH_RBD_RWL
-  pobj_action buffer_alloc_action;
-  TOID(uint8_t) buffer_oid = OID_NULL;
+  uint64_t buffer_off;
   #endif
   bool allocated = false;
   utime_t allocation_lat;

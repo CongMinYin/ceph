@@ -259,7 +259,7 @@ template <typename T>
 void C_WriteRequest<T>::copy_pmem() {
   auto allocation = m_resources.buffers.begin();
   for (auto &operation : op_set->operations) {
-    operation->copy_bl_to_pmem_buffer(allocation);
+    operation->copy_bl_to_pmem_buffer(pwl.get_log_pool(), allocation);
     allocation++;
   }
 }

@@ -9,12 +9,12 @@
 //
 
 #include "ZonedAllocator.h"
-#include "bluestore_types.h"
+#include "Types.h"
 #include "zoned_types.h"
 #include "common/debug.h"
 
 #define dout_context cct
-#define dout_subsys ceph_subsys_bluestore
+#define dout_subsys ceph_subsys_alloc
 #undef dout_prefix
 #define dout_prefix *_dout << "ZonedAllocator " << this << " "
 

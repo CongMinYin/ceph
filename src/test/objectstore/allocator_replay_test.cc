@@ -6,6 +6,7 @@
  */
 #include <iostream>
 
+#include "alloc/Allocator.h"
 #include "common/ceph_argparse.h"
 #include "common/debug.h"
 #include "common/Cycles.h"
@@ -13,7 +14,6 @@
 #include "common/ceph_json.h"
 #include "common/admin_socket.h"
 #include "global/global_init.h"
-#include "os/bluestore/Allocator.h"
 
 
 void usage(const string &name) {

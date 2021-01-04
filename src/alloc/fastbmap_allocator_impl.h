@@ -33,9 +33,9 @@ typedef std::vector<slot_t> slot_vector_t;
 #else
 #include "include/ceph_assert.h"
 #include "common/likely.h"
-#include "os/bluestore/bluestore_types.h"
 #include "include/mempool.h"
 #include "common/ceph_mutex.h"
+#include "Types.h"
 
 typedef bluestore_interval_t<uint64_t, uint64_t> interval_t;
 typedef PExtentVector interval_vector_t;

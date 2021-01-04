@@ -10,7 +10,6 @@
 //
 
 #include "ZonedFreelistManager.h"
-#include "bluestore_common.h"
 #include "include/stringify.h"
 #include "kv/KeyValueDB.h"
 #include "os/kv.h"
@@ -19,7 +18,7 @@
 #include "common/debug.h"
 
 #define dout_context cct
-#define dout_subsys ceph_subsys_bluestore
+#define dout_subsys ceph_subsys_alloc
 #undef dout_prefix
 #define dout_prefix *_dout << "zoned freelist "
 

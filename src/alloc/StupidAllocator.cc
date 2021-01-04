@@ -2,11 +2,11 @@
 // vim: ts=8 sw=2 smarttab
 
 #include "StupidAllocator.h"
-#include "bluestore_types.h"
+#include "Types.h"
 #include "common/debug.h"
 
 #define dout_context cct
-#define dout_subsys ceph_subsys_bluestore
+#define dout_subsys ceph_subsys_alloc
 #undef dout_prefix
 #define dout_prefix *_dout << "stupidalloc 0x" << this << " "
 

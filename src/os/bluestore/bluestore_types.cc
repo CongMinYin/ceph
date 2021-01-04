@@ -608,27 +608,6 @@ ostream& operator<<(ostream& out, const bluestore_blob_use_tracker_t& m)
   return out;
 }
 
-// bluestore_pextent_t
-
-void bluestore_pextent_t::dump(Formatter *f) const
-{
-  f->dump_unsigned("offset", offset);
-  f->dump_unsigned("length", length);
-}
-
-ostream& operator<<(ostream& out, const bluestore_pextent_t& o) {
-  if (o.is_valid())
-    return out << "0x" << std::hex << o.offset << "~" << o.length << std::dec;
-  else
-    return out << "!~" << std::hex << o.length << std::dec;
-}
-
-void bluestore_pextent_t::generate_test_instances(list<bluestore_pextent_t*>& ls)
-{
-  ls.push_back(new bluestore_pextent_t);
-  ls.push_back(new bluestore_pextent_t(1, 2));
-}
-
 // bluestore_blob_t
 
 string bluestore_blob_t::get_flags_string(unsigned flags)

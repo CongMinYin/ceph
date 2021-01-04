@@ -23,6 +23,8 @@ class SyncPointLogOperation;
 
 class GenericLogOperation;
 
+class ReplicatedDataPool;
+
 using GenericLogOperationSharedPtr = std::shared_ptr<GenericLogOperation>;
 
 using GenericLogOperationsVector = std::vector<GenericLogOperationSharedPtr>;
@@ -55,8 +57,9 @@ public:
   }
   #ifdef WITH_RBD_RWL
   virtual void copy_bl_to_pmem_buffer(
+      ReplicatedDataPool* log_pool,
       std::vector<WriteBufferAllocation>::iterator allocation) {};
-  virtual void flush_pmem_buf_to_cache(PMEMobjpool *log_pool) {};
+  virtual void flush_pmem_buf_to_cache(io::Extents& extents) {};
   #endif
 };
 
@@ -148,8 +151,9 @@ public:
   void complete(int r) override;
   #ifdef WITH_RBD_RWL
   void copy_bl_to_pmem_buffer(
+      ReplicatedDataPool* log_pool,
       std::vector<WriteBufferAllocation>::iterator allocation) override;
-  void flush_pmem_buf_to_cache(PMEMobjpool *log_pool) override;
+  void flush_pmem_buf_to_cache(io::Extents& extents) override;
   #endif
 };
 

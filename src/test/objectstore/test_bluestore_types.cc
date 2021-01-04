@@ -1,13 +1,13 @@
 // -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
 // vim: ts=8 sw=2 smarttab
 
+#include "alloc/AvlAllocator.h"
 #include "include/types.h"
 #include "os/bluestore/bluestore_types.h"
 #include "gtest/gtest.h"
 #include "include/stringify.h"
 #include "common/ceph_time.h"
 #include "os/bluestore/BlueStore.h"
-#include "os/bluestore/AvlAllocator.h"
 #include "common/ceph_argparse.h"
 #include "global/global_init.h"
 #include "global/global_context.h"

@@ -4,7 +4,6 @@
 #ifndef CEPH_LIBRBD_CACHE_REPLICATED_WRITE_LOG
 #define CEPH_LIBRBD_CACHE_REPLICATED_WRITE_LOG
 
-#include <libpmemobj.h>
 #include "common/RWLock.h"
 #include "common/WorkQueue.h"
 #include "common/AsyncOpTracker.h"
@@ -30,6 +29,8 @@ namespace cache {
 
 namespace pwl {
 
+class ReplicatedDataPool;
+
 template <typename ImageCtxT>
 class ReplicatedWriteLog : public AbstractWriteLog<ImageCtxT> {
 public:
@@ -41,6 +42,11 @@ public:
   ReplicatedWriteLog(const ReplicatedWriteLog&) = delete;
   ReplicatedWriteLog &operator=(const ReplicatedWriteLog&) = delete;
 
+  ReplicatedDataPool* get_log_pool() override {
+    return m_log_pool;
+  }
+  uint8_t* get_data_pmem_buffer(uint64_t off);
+
 private:
   using This = AbstractWriteLog<ImageCtxT>;
   using C_WriteRequestT = pwl::C_WriteRequest<This>;
@@ -50,8 +56,7 @@ private:
   using C_WriteSameRequestT = pwl::C_WriteSameRequest<This>;
   using C_CompAndWriteRequestT = pwl::C_CompAndWriteRequest<This>;
 
-  PMEMobjpool *m_log_pool = nullptr;
-  const char* m_pwl_pool_layout_name;
+  ReplicatedDataPool *m_log_pool = nullptr;
 
   void remove_pool_file();
   void load_existing_entries(pwl::DeferredContexts &later);

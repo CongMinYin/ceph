@@ -9,13 +9,13 @@
  * Foundation.  See file COPYING.
  *
  */
-#ifndef CEPH_OS_BLUESTORE_ALLOCATOR_H
-#define CEPH_OS_BLUESTORE_ALLOCATOR_H
+#ifndef CEPH_ALLOC_ALLOCATOR_H
+#define CEPH_ALLOC_ALLOCATOR_H
 
 #include <functional>
 #include <ostream>
 #include "include/ceph_assert.h"
-#include "bluestore_types.h"
+#include "Types.h"
 #include "zoned_types.h"
 
 class Allocator {

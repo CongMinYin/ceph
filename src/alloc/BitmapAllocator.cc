@@ -4,7 +4,7 @@
 #include "BitmapAllocator.h"
 
 #define dout_context cct
-#define dout_subsys ceph_subsys_bluestore
+#define dout_subsys ceph_subsys_alloc
 #undef dout_prefix
 #define dout_prefix *_dout << "fbmap_alloc " << this << " "
 

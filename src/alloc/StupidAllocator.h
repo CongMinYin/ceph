@@ -1,17 +1,17 @@
 // -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
 // vim: ts=8 sw=2 smarttab
 
-#ifndef CEPH_OS_BLUESTORE_STUPIDALLOCATOR_H
-#define CEPH_OS_BLUESTORE_STUPIDALLOCATOR_H
+#ifndef CEPH_ALLOC_STUPIDALLOCATOR_H
+#define CEPH_ALLOC_STUPIDALLOCATOR_H
 
 #include <mutex>
 
 #include "Allocator.h"
 #include "include/btree_map.h"
 #include "include/interval_set.h"
-#include "os/bluestore/bluestore_types.h"
 #include "include/mempool.h"
 #include "common/ceph_mutex.h"
+#include "Types.h"
 
 class StupidAllocator : public Allocator {
   CephContext* cct;

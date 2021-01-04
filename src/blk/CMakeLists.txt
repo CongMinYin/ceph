@@ -42,7 +42,6 @@ endif()
 
 if(WITH_BLUESTORE_PMEM OR WITH_RBD_RWL)
   target_link_libraries(blk
-    PUBLIC pmem::pmemobj
     PRIVATE pmem::pmem)
 endif()
 

@@ -15,6 +15,10 @@ namespace cache {
 class ImageWritebackInterface;
 namespace pwl {
 
+#ifdef WITH_RBD_RWL
+class ReplicatedDataPool;
+#endif
+
 class SyncPointLogEntry;
 class GenericWriteLogEntry;
 class WriteLogEntry;
@@ -48,6 +52,9 @@ public:
   virtual unsigned int bytes_dirty() const {
     return 0;
   };
+  virtual uint64_t data_offset() const {
+    return 0;
+  }
   virtual std::shared_ptr<SyncPointLogEntry> get_sync_point_entry() {
     return nullptr;
   }
@@ -108,6 +115,9 @@ public:
     /* The bytes in the image this op makes dirty. Discard and WS override. */
     return write_bytes();
   };
+  uint64_t data_offset() const override {
+    return ram_entry.write_data_pos;
+  }
   BlockExtent block_extent() {
     return ram_entry.block_extent();
   }
@@ -171,7 +181,8 @@ public:
   void init(bool has_data,
             uint64_t current_sync_gen, uint64_t last_op_sequence_num, bool persist_on_flush);
   #ifdef WITH_RBD_RWL
-  void init_pmem_buffer(std::vector<WriteBufferAllocation>::iterator allocation);
+  void init_pmem_buffer(
+      ReplicatedDataPool* log_pool, std::vector<WriteBufferAllocation>::iterator allocation);
   #endif
   BlockExtent block_extent();
   unsigned int reader_count() const;

@@ -9,12 +9,12 @@
 #include <gtest/gtest.h>
 #include <boost/random/triangle_distribution.hpp>
 
+#include "alloc/Allocator.h"
 #include "common/ceph_mutex.h"
 #include "common/Cond.h"
 #include "common/errno.h"
 #include "include/stringify.h"
 #include "include/Context.h"
-#include "os/bluestore/Allocator.h"
 
 #include <boost/random/uniform_int.hpp>
 

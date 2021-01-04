@@ -8,11 +8,11 @@
 #include <boost/scoped_ptr.hpp>
 #include <gtest/gtest.h>
 
+#include "alloc/Allocator.h"
 #include "common/Cond.h"
 #include "common/errno.h"
 #include "include/stringify.h"
 #include "include/Context.h"
-#include "os/bluestore/Allocator.h"
 
 #include <boost/random/uniform_int.hpp>
 typedef boost::mt11213b gen_type;
