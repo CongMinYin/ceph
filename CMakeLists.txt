@@ -231,6 +231,9 @@ CMAKE_DEPENDENT_OPTION(WITH_RBD_SSD_CACHE "Enable librbd persistent write back c
 CMAKE_DEPENDENT_OPTION(WITH_SYSTEM_PMDK "Require and build with system PMDK" OFF
   "WITH_RBD_RWL OR WITH_BLUESTORE_PMEM" OFF)
 
+CMAKE_DEPENDENT_OPTION(WITH_SYSTEM_RPMA "Require and build with system RPMA" OFF
+  "WITH_RBD_RWL OR WITH_BLUESTORE_PMEM" OFF)
+
 CMAKE_DEPENDENT_OPTION(WITH_CACHE_REPLICA "Enable librbd persistent write back cache replica daemon" ON
   "WITH_RBD_RWL" OFF)
 
