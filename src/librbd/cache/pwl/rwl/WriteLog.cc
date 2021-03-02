@@ -785,7 +785,7 @@ void WriteLog<I>::process_work() {
             (utime_t(ceph_clock_now() - started).to_msec() < RETIRE_BATCH_TIME_LIMIT_MS))) {
         if (!retire_entries((this->m_shutting_down || this->m_invalidating ||
            (this->m_bytes_allocated > aggressive_high_water_bytes) ||
-           (m_log_entries.size() > aggressive_high_water_entries))
+           (m_log_entries.size() > aggressive_high_water_entries) || this->m_alloc_failed_since_retire )
             ? MAX_ALLOC_PER_TRANSACTION
             : MAX_FREE_PER_TRANSACTION)) {
           break;

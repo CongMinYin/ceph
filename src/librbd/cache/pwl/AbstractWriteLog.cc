@@ -1483,6 +1483,25 @@ bool AbstractWriteLog<I>::check_allocation(C_BlockIORequestT *req,
     }
   }
 
+  /*
+  // just for test
+  if (!alloc_succeeds) {
+    ldout(m_image_ctx.cct, 5) << " ********alloc failed*******"
+                              << dendl;
+  } else {
+    ldout(m_image_ctx.cct, 5) << " ==========alloc succed=========="
+                              << dendl;
+  }
+  ldout(m_image_ctx.cct, 5)   << " no space:  " << no_space
+                              << " m_free_lanes: " << m_free_lanes
+                              << " num_lanes: " << num_lanes
+                              << " m_free_log_entries: " << m_free_log_entries
+                              << " num_log_entries: " << num_log_entries
+                              << " m_bytes_allocated: " << m_bytes_allocated
+                              << " bytes_allocated: " << bytes_allocated
+                              << " bytes_allocated_cap: " << bytes_allocated_cap
+                              << dendl;
+*/
   if (alloc_succeeds) {
     reserve_cache(req, alloc_succeeds, no_space);
   }
