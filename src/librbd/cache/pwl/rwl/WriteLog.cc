@@ -888,7 +888,8 @@ void WriteLog<I>::reserve_cache(C_BlockIORequestT *req,
     buffer.allocation_lat = ceph_clock_now() - before_reserve;
     if (TOID_IS_NULL(buffer.buffer_oid)) {
       if (!req->has_io_waited_for_buffers()) {
-        req->set_io_waited_for_entries(true);
+        req->set_io_waited_for_buffers(true);
+        //req->set_io_waited_for_entries(true);
       }
       ldout(m_image_ctx.cct, 5) << "can't allocate all data buffers: "
                                 << pmemobj_errormsg() << ". "
@@ -899,7 +900,7 @@ void WriteLog<I>::reserve_cache(C_BlockIORequestT *req,
     } else {
       buffer.allocated = true;
     }
-    ldout(m_image_ctx.cct, 20) << "Allocated " << buffer.buffer_oid.oid.pool_uuid_lo
+    ldout(m_image_ctx.cct, 5) << "Allocated " << buffer.buffer_oid.oid.pool_uuid_lo
                                << "." << buffer.buffer_oid.oid.off
                                << ", size=" << buffer.allocation_size << dendl;
   }

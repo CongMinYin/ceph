@@ -816,6 +816,9 @@ void AbstractWriteLog<I>::write(Extents &&image_extents,
 
   ceph_assert(m_initialized);
 
+  /* Split images because PMDK doesn't support allocating too big extent
+   * TODO: If the bluestore allocator is implemented, the split operation is not necessary
+   */
   Extents splitted_image_extents;
   uint64_t max_extent_size = get_max_extent();
   if (max_extent_size != 0) {
@@ -1351,6 +1354,9 @@ void AbstractWriteLog<I>::dispatch_deferred_writes(void)
         ceph_assert(!allocated);
         if (!allocated && front_req) {
           /* front_req->alloc_resources() failed on the last iteration. We'll stop dispatching. */
+          if (front_req->has_io_waited_for_buffers()) {
+            wake_up();
+          }
           front_req = nullptr;
           ceph_assert(!cleared_dispatching_flag);
           m_dispatching_deferred_ops = false;
@@ -1472,7 +1478,8 @@ bool AbstractWriteLog<I>::check_allocation(C_BlockIORequestT *req,
     /* Don't attempt buffer allocate if we've exceeded the "full" threshold */
     if (m_bytes_allocated + bytes_allocated > bytes_allocated_cap) {
       if (!req->has_io_waited_for_buffers()) {
-        req->set_io_waited_for_entries(true);
+        req->set_io_waited_for_buffers(true);
+        //req->set_io_waited_for_entries(true);
         ldout(m_image_ctx.cct, 1) << "Waiting for allocation cap (cap="
                                   << bytes_allocated_cap
                                   << ", allocated=" << m_bytes_allocated
@@ -1518,6 +1525,9 @@ bool AbstractWriteLog<I>::check_allocation(C_BlockIORequestT *req,
       m_bytes_allocated += bytes_allocated;
       m_bytes_cached += bytes_cached;
       m_bytes_dirty += bytes_dirtied;
+      if (req->has_io_waited_for_buffers()) {
+        req->set_io_waited_for_buffers(false);
+      }
     } else {
       alloc_succeeds = false;
     }
