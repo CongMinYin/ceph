@@ -509,7 +509,8 @@ void AbstractWriteLog<I>::pwl_init(Context *on_finish, DeferredContexts &later) 
   ldout(cct,5) << "pwl_path: " << m_cache_state->path << dendl;
 
   m_log_pool_name = m_cache_state->path;
-  m_log_pool_config_size = max(m_cache_state->size, MIN_POOL_SIZE);
+  //m_log_pool_config_size = max(m_cache_state->size, MIN_POOL_SIZE);
+  m_log_pool_config_size = m_cache_state->size;
 
   if ((!m_cache_state->present) &&
       (access(m_log_pool_name.c_str(), F_OK) == 0)) {
@@ -1463,8 +1464,8 @@ bool AbstractWriteLog<I>::check_allocation(C_BlockIORequestT *req,
       uint64_t &num_unpublished_reserves, uint64_t bytes_allocated_cap){
   bool alloc_succeeds = true;
   bool no_space = false;
+  std::lock_guard locker(m_lock);
   {
-    std::lock_guard locker(m_lock);
     if (m_free_lanes < num_lanes) {
       req->set_io_waited_for_lanes(true);
       ldout(m_image_ctx.cct, 20) << "not enough free lanes (need "
@@ -1502,29 +1503,21 @@ bool AbstractWriteLog<I>::check_allocation(C_BlockIORequestT *req,
   }
 
   if (alloc_succeeds) {
-    std::lock_guard locker(m_lock);
     /* We need one free log entry per extent (each is a separate entry), and
      * one free "lane" for remote replication. */
-    if ((m_free_lanes >= num_lanes) &&
-        (m_free_log_entries >= num_log_entries)) {
-      m_free_lanes -= num_lanes;
-      m_free_log_entries -= num_log_entries;
-      m_unpublished_reserves += num_unpublished_reserves;
-      m_bytes_allocated += bytes_allocated;
-      m_bytes_cached += bytes_cached;
-      m_bytes_dirty += bytes_dirtied;
-      if (req->has_io_waited_for_buffers()) {
-        req->set_io_waited_for_buffers(false);
-      }
-
-    } else {
-      alloc_succeeds = false;
+    m_free_lanes -= num_lanes;
+    m_free_log_entries -= num_log_entries;
+    m_unpublished_reserves += num_unpublished_reserves;
+    m_bytes_allocated += bytes_allocated;
+    m_bytes_cached += bytes_cached;
+    m_bytes_dirty += bytes_dirtied;
+    if (req->has_io_waited_for_buffers()) {
+      req->set_io_waited_for_buffers(false);
     }
   }
 
   if (!alloc_succeeds && no_space) {
     /* Expedite flushing and/or retiring */
-    std::lock_guard locker(m_lock);
     m_alloc_failed_since_retire = true;
     m_last_alloc_fail = ceph_clock_now();
   }
@@ -1610,9 +1603,17 @@ bool AbstractWriteLog<I>::can_flush_entry(std::shared_ptr<GenericLogEntry> log_e
 
   if (m_flush_ops_in_flight &&
       (log_entry->ram_entry.sync_gen_number > m_lowest_flushing_sync_gen)) {
+    ldout(cct, 20) << " m_flush_ops_in_flight " << m_flush_ops_in_flight
+                   << " sync_gen_number "<< log_entry->ram_entry.sync_gen_number
+                   << " m_lowest_flushing_sync_gen " << m_lowest_flushing_sync_gen
+                   << dendl;
     return false;
   }
-
+  ldout(cct, 20) << " log_entry->can_writeback() " << log_entry->can_writeback()
+                   << " m_flush_ops_in_flight "<< m_flush_ops_in_flight
+                   << " m_flush_bytes_in_flight " << m_flush_bytes_in_flight
+                   <<  *log_entry
+                   << dendl;
   return (log_entry->can_writeback() &&
          (m_flush_ops_in_flight <= IN_FLIGHT_FLUSH_WRITE_LIMIT) &&
          (m_flush_bytes_in_flight <= IN_FLIGHT_FLUSH_BYTES_LIMIT));
@@ -1697,6 +1698,7 @@ void AbstractWriteLog<I>::process_writeback_dirty_entries() {
       }
       auto candidate = m_dirty_log_entries.front();
       bool flushable = can_flush_entry(candidate);
+      ldout(cct, 20) << "----flushable----" << flushable << dendl;
       if (flushable) {
         post_unlock.add(construct_flush_entry_ctx(candidate));
         flushed++;

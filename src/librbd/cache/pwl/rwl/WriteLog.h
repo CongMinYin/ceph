@@ -5,7 +5,6 @@
 #define CEPH_LIBRBD_CACHE_REPLICATED_WRITE_LOG
 
 #include <functional>
-#include <libpmemobj.h>
 #include <list>
 #include "common/RWLock.h"
 #include "common/WorkQueue.h"
@@ -19,6 +18,7 @@
 #include "librbd/cache/pwl/LogOperation.h"
 #include "librbd/cache/pwl/Request.h"
 #include "librbd/cache/pwl/rwl/Builder.h"
+#include "librbd/cache/pwl/rwl/PmemManager.h"
 
 class Context;
 class SafeTimer;
@@ -55,7 +55,8 @@ private:
   using C_FlushRequestT = pwl::C_FlushRequest<This>;
   using C_DiscardRequestT = pwl::C_DiscardRequest<This>;
 
-  PMEMobjpool *m_log_pool = nullptr;
+  PmemDev *m_log_pool = nullptr;
+  uint64_t m_write_num = 0;
   Builder<This> *m_builderobj;
   const char* m_pwl_pool_layout_name;
   const uint64_t MAX_EXTENT_SIZE = 1048576;

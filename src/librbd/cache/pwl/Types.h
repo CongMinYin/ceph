@@ -170,12 +170,15 @@ const uint32_t LOG_STATS_INTERVAL_SECONDS = 5;
 const unsigned long int MAX_ALLOC_PER_TRANSACTION = 8;
 const unsigned long int MAX_FREE_PER_TRANSACTION = 1;
 const unsigned int MAX_CONCURRENT_WRITES = (1024 * 1024);
+const unsigned int SECOND_ROOT_OFFSET = 1u << 11;
+const unsigned int MAX_ROOT_LEN = 1u << 11;
+const unsigned int FIRST_ENTRY_OFFSET = 1u << 12;
 
-const uint64_t DEFAULT_POOL_SIZE = 1u<<30;
+const uint64_t DEFAULT_POOL_SIZE = 1u << 30;
 const uint64_t MIN_POOL_SIZE = DEFAULT_POOL_SIZE;
 constexpr double USABLE_SIZE = (7.0 / 10);
 const uint64_t BLOCK_ALLOC_OVERHEAD_BYTES = 16;
-const uint8_t RWL_POOL_VERSION = 1;
+const uint8_t RWL_POOL_VERSION = 2;
 const uint64_t MAX_LOG_ENTRIES = (1024 * 1024);
 const double AGGRESSIVE_RETIRE_HIGH_WATER = 0.75;
 const double RETIRE_HIGH_WATER = 0.50;
@@ -197,22 +200,18 @@ public:
   void add(Context* ctx);
 };
 
-/* Pmem structures */
-#ifdef WITH_RBD_RWL
-POBJ_LAYOUT_BEGIN(rbd_pwl);
-POBJ_LAYOUT_ROOT(rbd_pwl, struct WriteLogPoolRoot);
-POBJ_LAYOUT_TOID(rbd_pwl, uint8_t);
-POBJ_LAYOUT_TOID(rbd_pwl, struct WriteLogCacheEntry);
-POBJ_LAYOUT_END(rbd_pwl);
-#endif
-
 struct WriteLogCacheEntry {
   uint64_t sync_gen_number = 0;
   uint64_t write_sequence_number = 0;
   uint64_t image_offset_bytes;
   uint64_t write_bytes;
   #ifdef WITH_RBD_RWL
-  TOID(uint8_t) write_data;
+  // 与WriteLogCacheEntry类似，先记录偏移量，后续通过地址转换，这样才是可存储的文件偏移
+  // 应该指向的是pmem中的可读取地址，也就是偏移量，重新映射以后，应该可以通过起始地址和便宜量计算出entry的地址
+  // 这部分应该属于request的内容，检查是否需要持久化，如果要持久化，直接保存地址是不对的，应该保存偏移量
+  // char *write_data = nullptr;  /* the start addr of write operation */
+  uint64_t write_data = 0;    // pmem offset, 1 write_data == 512Byte
+  // (uint8_t *)(addr + write_data_pos * MIN_WRITE_ALLOC_SIZE);  // 使用方法，通过起始地址加上偏移量再转换成数据结构的指针
   #endif
   #ifdef WITH_RBD_SSD_CACHE
   uint64_t write_data_pos = 0; /* SSD data offset */
@@ -278,13 +277,16 @@ struct WriteLogCacheEntry {
 
 struct WriteLogPoolRoot {
   #ifdef WITH_RBD_RWL
+  uint32_t crc = 0;
+  /* decide which copy of root to write. If the number is even, write to 0~2k;
+   * otherwise, write 2~4k */
+  uint64_t write_num = 0;
   union {
     struct {
       uint8_t layout_version;    /* Version of this structure (RWL_POOL_VERSION) */
     };
     uint64_t _u64;
   } header;
-  TOID(struct WriteLogCacheEntry) log_entries;   /* contiguous array of log entries */
   #endif
   #ifdef WITH_RBD_SSD_CACHE
   uint64_t layout_version = 0;
@@ -320,8 +322,8 @@ struct WriteLogPoolRoot {
 struct WriteBufferAllocation {
   unsigned int allocation_size = 0;
   #ifdef WITH_RBD_RWL
-  pobj_action buffer_alloc_action;
-  TOID(uint8_t) buffer_oid = OID_NULL;
+  char *pmem_head_addr = nullptr; // runtime pmem addr
+  uint64_t buffer_id = 0;     // map to pmem offset, it can be persistent
   #endif
   bool allocated = false;
   utime_t allocation_lat;
