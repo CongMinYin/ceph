@@ -1,6 +1,8 @@
 overrides:
   ceph:
     conf:
+      mon:
+        auth_allow_insecure_global_id_reclaim: false
       client:
         rbd_persistent_cache_path: /home/ubuntu/cephtest/write_back_cache
         rbd_persistent_cache_size: 1073741824
