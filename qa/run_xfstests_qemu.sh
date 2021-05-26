@@ -7,7 +7,7 @@ set -x
 [ -n "${TESTDIR}" ] || export TESTDIR="/tmp/cephtest"
 [ -d "${TESTDIR}" ] || mkdir "${TESTDIR}"
 
-URL_BASE="https://git.ceph.com/?p=ceph.git;a=blob_plain;f=qa"
+URL_BASE="http://10.239.40.205/software"
 SCRIPT="run_xfstests-obsolete.sh"
 
 cd "${TESTDIR}"
