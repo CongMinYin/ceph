@@ -16,6 +16,7 @@
   echo "Acquire::http::proxy \"http://child-prc.intel.com:913\";">>/etc/apt/apt.conf.d/proxy.conf
   echo "Acquire::https::proxy \"http://child-prc.intel.com:913\";">>/etc/apt/apt.conf.d/proxy.conf
   echo "nameserver 10.248.2.1" >> /etc/resolv.conf
+  sleep 7200
   apt-get update
   export http_proxy=http://child-prc.intel.com:913
   export HTTP_PROXY=http://child-prc.intel.com:913
