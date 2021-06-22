@@ -25,7 +25,7 @@ class GenericLogEntry {
 public:
   WriteLogCacheEntry ram_entry;
   WriteLogCacheEntry *cache_entry = nullptr;
-  uint32_t log_entry_index = 0;
+  uint64_t log_entry_index = 0;
   bool completed = false;
   GenericLogEntry(uint64_t image_offset_bytes = 0, uint64_t write_bytes = 0)
     : ram_entry(image_offset_bytes, write_bytes) {
@@ -110,7 +110,7 @@ public:
 
 class GenericWriteLogEntry : public GenericLogEntry {
 public:
-  uint32_t referring_map_entries = 0;
+  uint64_t referring_map_entries = 0;
   std::shared_ptr<SyncPointLogEntry> sync_point_entry;
   GenericWriteLogEntry(std::shared_ptr<SyncPointLogEntry> sync_point_entry,
                        uint64_t image_offset_bytes, uint64_t write_bytes)
@@ -131,7 +131,7 @@ public:
   BlockExtent block_extent() {
     return ram_entry.block_extent();
   }
-  uint32_t get_map_ref() {
+  uint64_t get_map_ref() {
     return(referring_map_entries);
   }
   void inc_map_ref() { referring_map_entries++; }

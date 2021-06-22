@@ -106,7 +106,7 @@ void WriteLog<I>::alloc_op_log_entries(GenericLogOperations &ops)
   std::lock_guard locker(m_lock);
 
   for (auto &operation : ops) {
-    uint32_t entry_index = this->m_first_free_entry;
+    uint64_t entry_index = this->m_first_free_entry;
     this->m_first_free_entry = (this->m_first_free_entry + 1) % this->m_total_log_entries;
     auto &log_entry = operation->get_log_entry();
     log_entry->log_entry_index = entry_index;
@@ -454,8 +454,8 @@ template <typename I>
 bool WriteLog<I>::retire_entries(const unsigned long int frees_per_tx) {
   CephContext *cct = m_image_ctx.cct;
   GenericLogEntriesVector retiring_entries;
-  uint32_t initial_first_valid_entry;
-  uint32_t first_valid_entry;
+  uint64_t initial_first_valid_entry;
+  uint64_t first_valid_entry;
 
   std::lock_guard retire_locker(this->m_log_retire_lock);
   ldout(cct, 20) << "Look for entries to retire" << dendl;

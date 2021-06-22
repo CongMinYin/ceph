@@ -230,7 +230,7 @@ struct WriteLogCacheEntry {
     };
   };
   uint32_t ws_datalen = 0;  /* Length of data buffer (writesame only) */
-  uint32_t entry_index = 0; /* For debug consistency check. Can be removed if
+  uint64_t entry_index = 0; /* For debug consistency check. Can be removed if
                              * we need the space */
   WriteLogCacheEntry(uint64_t image_offset_bytes=0, uint64_t write_bytes=0)
     : image_offset_bytes(image_offset_bytes), write_bytes(write_bytes),
@@ -294,9 +294,9 @@ struct WriteLogPoolRoot {
   uint64_t flushed_sync_gen;     /* All writing entries with this or a lower
                                   * sync gen number are flushed. */
   uint32_t block_size;           /* block size */
-  uint32_t num_log_entries;
-  uint32_t first_free_entry;     /* Entry following the newest valid entry */
-  uint32_t first_valid_entry;    /* Index of the oldest valid entry in the log */
+  uint64_t num_log_entries;
+  uint64_t first_free_entry;     /* Entry following the newest valid entry */
+  uint64_t first_valid_entry;    /* Index of the oldest valid entry in the log */
 
   #ifdef WITH_RBD_SSD_CACHE
   DENC(WriteLogPoolRoot, v, p) {

@@ -149,7 +149,7 @@ public:
   unsigned int get_free_lanes() {
     return m_free_lanes;
   }
-  uint32_t get_free_log_entries() {
+  uint64_t get_free_log_entries() {
     return m_free_log_entries;
   }
   void add_into_log_map(pwl::GenericWriteLogEntries &log_entries,
@@ -265,8 +265,8 @@ protected:
   std::string m_log_pool_name;
   uint64_t m_log_pool_size;
 
-  uint32_t m_total_log_entries = 0;
-  uint32_t m_free_log_entries = 0;
+  uint64_t m_total_log_entries = 0;
+  uint64_t m_free_log_entries = 0;
 
   std::atomic<uint64_t> m_bytes_allocated = {0}; /* Total bytes allocated in write buffers */
   uint64_t m_bytes_cached = 0;    /* Total bytes used in write buffers */
@@ -352,8 +352,8 @@ protected:
 
   bool check_allocation(
       C_BlockIORequestT *req, uint64_t bytes_cached, uint64_t bytes_dirtied,
-      uint64_t bytes_allocated, uint32_t num_lanes, uint32_t num_log_entries,
-      uint32_t num_unpublished_reserves);
+      uint64_t bytes_allocated, uint64_t num_lanes, uint64_t num_log_entries,
+      uint64_t num_unpublished_reserves);
   void append_scheduled(
       pwl::GenericLogOperations &ops, bool &ops_remain, bool &appending,
       bool isRWL=false);
