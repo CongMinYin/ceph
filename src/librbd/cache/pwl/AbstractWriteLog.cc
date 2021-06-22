@@ -1488,7 +1488,7 @@ bool AbstractWriteLog<I>::check_allocation(
       no_space = true; /* Entries must be retired */
     }
     /* Don't attempt buffer allocate if we've exceeded the "full" threshold */
-    if (m_bytes_allocated + bytes_allocated > m_bytes_allocated_cap) {
+    if (m_bytes_allocated + bytes_allocated >= m_bytes_allocated_cap) {
       if (!req->has_io_waited_for_buffers()) {
         req->set_io_waited_for_buffers(true);
         ldout(m_image_ctx.cct, 5) << "Waiting for allocation cap (cap="
@@ -1510,7 +1510,8 @@ bool AbstractWriteLog<I>::check_allocation(
     /* We need one free log entry per extent (each is a separate entry), and
      * one free "lane" for remote replication. */
     if ((m_free_lanes >= num_lanes) &&
-        (m_free_log_entries >= num_log_entries)) {
+        (m_free_log_entries >= num_log_entries) &&
+        (m_bytes_allocated + bytes_allocated < m_bytes_allocated_cap)) {
       m_free_lanes -= num_lanes;
       m_free_log_entries -= num_log_entries;
       m_unpublished_reserves += num_unpublished_reserves;
@@ -1520,7 +1521,6 @@ bool AbstractWriteLog<I>::check_allocation(
       if (req->has_io_waited_for_buffers()) {
         req->set_io_waited_for_buffers(false);
       }
-
     } else {
       alloc_succeeds = false;
     }
