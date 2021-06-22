@@ -143,6 +143,8 @@ bool WriteLog<I>::initialize_pool(Context *on_finish,
     m_cache_state->empty = true;
     /* new pool, calculate and store metadata */
 
+    /* resize pool size */
+    this->m_log_pool_size = bdev->get_size();
     /* Size of ring buffer */
     this->m_bytes_allocated_cap =
         this->m_log_pool_size - DATA_RING_BUFFER_OFFSET;
