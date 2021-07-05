@@ -129,6 +129,18 @@ bool WriteLog<I>::initialize_pool(Context *on_finish,
       on_finish->complete(r);
       return false;
     }
+    if (this->m_log_pool_size % MIN_WRITE_ALLOC_SSD_SIZE != 0 ||
+        this->m_log_pool_size != bdev->get_size()) {
+      lderr(m_image_ctx.cct) << "rbd_persistent_cache_size is not align to "
+                             << "bdev block size: " << bdev->get_block_size()
+                             << ". Please set an aligned cache size in ssd"
+                             << " mode. The closest aligned size is "
+                             << bdev->get_size() << dendl;
+      bdev->close();
+      delete bdev;
+      on_finish->complete(-EINVAL);
+      return false;
+    }
     m_cache_state->present = true;
     m_cache_state->clean = true;
     m_cache_state->empty = true;
