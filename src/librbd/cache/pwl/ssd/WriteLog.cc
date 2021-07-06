@@ -151,6 +151,7 @@ bool WriteLog<I>::initialize_pool(Context *on_finish,
     m_first_valid_entry = DATA_RING_BUFFER_OFFSET;
 
     auto new_root = std::make_shared<WriteLogPoolRoot>(pool_root);
+    new_root->layout_version = SSD_POOL_VERSION;
     new_root->pool_size = this->m_log_pool_size;
     new_root->flushed_sync_gen = this->m_flushed_sync_gen;
     new_root->block_size = MIN_WRITE_ALLOC_SSD_SIZE;
@@ -176,6 +177,43 @@ bool WriteLog<I>::initialize_pool(Context *on_finish,
       on_finish->complete(r);
       return false;
     }
+
+    bufferlist bl;
+    SuperBlock superblock;
+    ::IOContext ioctx(cct, nullptr);
+    r = bdev->read(0, MIN_WRITE_ALLOC_SSD_SIZE, &bl, &ioctx, false);
+    if (r < 0) {
+      bdev->close();
+      delete bdev;
+      on_finish->complete(r);
+      return false;
+    }
+    auto p = bl.cbegin();
+    decode(superblock, p);
+    pool_root = superblock.root;
+    ldout(cct, 1) << "Decoded root: pool_size=" << pool_root.pool_size
+                << " first_valid_entry=" << pool_root.first_valid_entry
+                << " first_free_entry=" << pool_root.first_free_entry
+                << " flushed_sync_gen=" << pool_root.flushed_sync_gen
+                << dendl;
+    ceph_assert(is_valid_pool_root(pool_root));
+    if (pool_root.layout_version != SSD_POOL_VERSION) {
+      lderr(cct) << "Pool layout version is "
+                 << pool_root.layout_version
+                 << " expected " << SSD_POOL_VERSION << dendl;
+      bdev->close();
+      delete bdev;
+      on_finish->complete(-EINVAL);
+      return false;
+    }
+
+    this->m_log_pool_size = pool_root.pool_size;
+    this->m_flushed_sync_gen = pool_root.flushed_sync_gen;
+    this->m_first_valid_entry = pool_root.first_valid_entry;
+    this->m_first_free_entry = pool_root.first_free_entry;
+    this->m_bytes_allocated_cap =
+        this->m_log_pool_size - DATA_RING_BUFFER_OFFSET;
+
     load_existing_entries(later);
     m_cache_state->clean = this->m_dirty_log_entries.empty();
     m_cache_state->empty = m_log_entries.empty();
@@ -210,33 +248,8 @@ void WriteLog<I>::remove_pool_file() {
 
 template <typename I>
 void WriteLog<I>::load_existing_entries(pwl::DeferredContexts &later) {
-  bufferlist bl;
   CephContext *cct = m_image_ctx.cct;
-  ::IOContext ioctx(cct, nullptr);
-  bdev->read(0, MIN_WRITE_ALLOC_SSD_SIZE, &bl, &ioctx, false);
-  SuperBlock superblock;
-
-  auto p = bl.cbegin();
-  decode(superblock, p);
-
-  pool_root = superblock.root;
-  ldout(cct, 1) << "Decoded root: pool_size=" << pool_root.pool_size
-                << " first_valid_entry=" << pool_root.first_valid_entry
-                << " first_free_entry=" << pool_root.first_free_entry
-                << " flushed_sync_gen=" << pool_root.flushed_sync_gen
-                << dendl;
-  ceph_assert(is_valid_pool_root(pool_root));
-
-  this->m_log_pool_size = pool_root.pool_size;
-  this->m_flushed_sync_gen = pool_root.flushed_sync_gen;
-  this->m_first_valid_entry = pool_root.first_valid_entry;
-  this->m_first_free_entry = pool_root.first_free_entry;
-
-  this->m_bytes_allocated_cap =
-      this->m_log_pool_size - DATA_RING_BUFFER_OFFSET;
-
   std::map<uint64_t, std::shared_ptr<SyncPointLogEntry>> sync_point_entries;
-
   std::map<uint64_t, bool> missing_sync_points;
 
   // Iterate through the log_entries and append all the write_bytes
