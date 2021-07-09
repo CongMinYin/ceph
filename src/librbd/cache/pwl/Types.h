@@ -175,7 +175,7 @@ const uint64_t DEFAULT_POOL_SIZE = 1u<<30;
 const uint64_t MIN_POOL_SIZE = DEFAULT_POOL_SIZE;
 constexpr double USABLE_SIZE = (7.0 / 10);
 const uint64_t BLOCK_ALLOC_OVERHEAD_BYTES = 16;
-const uint8_t RWL_POOL_VERSION = 1;
+const uint8_t RWL_POOL_VERSION = 2;
 const uint64_t SSD_POOL_VERSION = 1;
 const uint64_t MAX_LOG_ENTRIES = (1024 * 1024);
 const double AGGRESSIVE_RETIRE_HIGH_WATER = 0.75;
@@ -212,27 +212,34 @@ struct WriteLogCacheEntry {
   uint64_t write_sequence_number = 0;
   uint64_t image_offset_bytes;
   uint64_t write_bytes;
-  #ifdef WITH_RBD_RWL
-  TOID(uint8_t) write_data;
-  #endif
-  #ifdef WITH_RBD_SSD_CACHE
-  uint64_t write_data_pos = 0; /* SSD data offset */
-  #endif
   union {
-    uint8_t flags;
+    uint64_t flags;
     struct {
-      uint8_t entry_valid :1; /* if 0, this entry is free */
-      uint8_t sync_point :1;  /* No data. No write sequence number. Marks sync
+      uint64_t entry_valid :1; /* if 0, this entry is free */
+      uint64_t sync_point :1;  /* No data. No write sequence number. Marks sync
                                  point for this sync gen number */
-      uint8_t sequenced :1;   /* write sequence number is valid */
-      uint8_t has_data :1;    /* write_data field is valid (else ignore) */
-      uint8_t discard :1;     /* has_data will be 0 if this is a discard */
-      uint8_t writesame :1;   /* ws_datalen indicates length of data at write_bytes */
+      uint64_t sequenced :1;   /* write sequence number is valid */
+      uint64_t has_data :1;    /* write_data field is valid (else ignore) */
+      uint64_t discard :1;     /* has_data will be 0 if this is a discard */
+      uint64_t writesame :1;   /* ws_datalen indicates length of data at write_bytes */
     };
   };
-  uint32_t ws_datalen = 0;  /* Length of data buffer (writesame only) */
-  uint32_t entry_index = 0; /* For debug consistency check. Can be removed if
+  uint64_t ws_datalen = 0;  /* Length of data buffer (writesame only) */
+  uint64_t entry_index = 0; /* For debug consistency check. Can be removed if
                              * we need the space */
+  union {
+    /* RWL */
+    struct {
+      #ifdef WITH_RBD_RWL
+      PMEMoid write_data;
+      #endif
+    };
+    /* SSD */
+    struct {
+      uint64_t write_data_pos = 0; /* data offset */
+    };
+  };
+
   WriteLogCacheEntry(uint64_t image_offset_bytes=0, uint64_t write_bytes=0)
     : image_offset_bytes(image_offset_bytes), write_bytes(write_bytes),
       entry_valid(0), sync_point(0), sequenced(0), has_data(0), discard(0), writesame(0) {
@@ -278,32 +285,32 @@ struct WriteLogCacheEntry {
 };
 
 struct WriteLogPoolRoot {
-  #ifdef WITH_RBD_RWL
-  union {
-    struct {
-      uint8_t layout_version;    /* Version of this structure (RWL_POOL_VERSION) */
-    };
-    uint64_t _u64;
-  } header;
-  TOID(struct WriteLogCacheEntry) log_entries;   /* contiguous array of log entries */
-  #endif
-  #ifdef WITH_RBD_SSD_CACHE
-  uint64_t layout_version = 0;
-  uint64_t cur_sync_gen = 0;
-  #endif
+  uint64_t layout_version;
   uint64_t pool_size;
   uint64_t flushed_sync_gen;     /* All writing entries with this or a lower
                                   * sync gen number are flushed. */
   uint32_t block_size;           /* block size */
-  uint32_t num_log_entries;
+  uint64_t num_log_entries;
   uint64_t first_free_entry;     /* Entry following the newest valid entry */
   uint64_t first_valid_entry;    /* Index of the oldest valid entry in the log */
+
+  union {
+    /* RWL */
+    struct {
+      #ifdef WITH_RBD_RWL
+      PMEMoid log_entries;      /* contiguous array of log entries */
+      #endif
+    };
+    /* SSD */
+    struct {
+      uint64_t unused;
+    };
+  };
 
   #ifdef WITH_RBD_SSD_CACHE
   DENC(WriteLogPoolRoot, v, p) {
     DENC_START(1, 1, p);
     denc(v.layout_version, p);
-    denc(v.cur_sync_gen, p);
     denc(v.pool_size, p);
     denc(v.flushed_sync_gen, p);
     denc(v.block_size, p);

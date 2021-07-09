@@ -98,7 +98,8 @@ void WriteLog<I>::alloc_op_log_entries(GenericLogOperations &ops)
 {
   TOID(struct WriteLogPoolRoot) pool_root;
   pool_root = POBJ_ROOT(m_log_pool, struct WriteLogPoolRoot);
-  struct WriteLogCacheEntry *pmem_log_entries = D_RW(D_RW(pool_root)->log_entries);
+  TOID(struct WriteLogCacheEntry) _log_entries = D_RW(pool_root)->log_entries;
+  struct WriteLogCacheEntry *pmem_log_entries = D_RW(_log_entries);
 
   ceph_assert(ceph_mutex_is_locked_by_me(this->m_log_append_lock));
 
@@ -300,10 +301,11 @@ bool WriteLog<I>::initialize_pool(Context *on_finish, pwl::DeferredContexts &lat
     m_first_valid_entry = 0;
     TX_BEGIN(m_log_pool) {
       TX_ADD(pool_root);
-      D_RW(pool_root)->header.layout_version = RWL_POOL_VERSION;
-      D_RW(pool_root)->log_entries =
-        TX_ZALLOC(struct WriteLogCacheEntry,
-                  sizeof(struct WriteLogCacheEntry) * num_small_writes);
+      D_RW(pool_root)->layout_version = RWL_POOL_VERSION;
+      TOID(struct WriteLogCacheEntry) _log_entries;
+      _log_entries = TX_ZALLOC(struct WriteLogCacheEntry,
+                     sizeof(struct WriteLogCacheEntry) * num_small_writes);
+      D_RW(pool_root)->log_entries = _log_entries.oid;
       D_RW(pool_root)->pool_size = this->m_log_pool_size;
       D_RW(pool_root)->flushed_sync_gen = this->m_flushed_sync_gen;
       D_RW(pool_root)->block_size = MIN_WRITE_ALLOC_SIZE;
@@ -333,10 +335,10 @@ bool WriteLog<I>::initialize_pool(Context *on_finish, pwl::DeferredContexts &lat
       return false;
     }
     pool_root = POBJ_ROOT(m_log_pool, struct WriteLogPoolRoot);
-    if (D_RO(pool_root)->header.layout_version != RWL_POOL_VERSION) {
+    if (D_RO(pool_root)->layout_version != RWL_POOL_VERSION) {
       // TODO: will handle upgrading version in the future
       lderr(cct) << "Pool layout version is "
-                 << D_RO(pool_root)->header.layout_version
+                 << D_RO(pool_root)->layout_version
                  << " expected " << RWL_POOL_VERSION << dendl;
       on_finish->complete(-EINVAL);
       return false;
@@ -395,7 +397,8 @@ template <typename I>
 void WriteLog<I>::load_existing_entries(DeferredContexts &later) {
   TOID(struct WriteLogPoolRoot) pool_root;
   pool_root = POBJ_ROOT(m_log_pool, struct WriteLogPoolRoot);
-  struct WriteLogCacheEntry *pmem_log_entries = D_RW(D_RW(pool_root)->log_entries);
+  TOID(struct WriteLogCacheEntry) _log_entries= D_RW(pool_root)->log_entries;
+  struct WriteLogCacheEntry *pmem_log_entries = D_RW(_log_entries);
   uint64_t entry_index = m_first_valid_entry;
   /* The map below allows us to find sync point log entries by sync
    * gen number, which is necessary so write entries can be linked to
@@ -442,7 +445,8 @@ template <typename I>
 void WriteLog<I>::write_data_to_buffer(
     std::shared_ptr<pwl::WriteLogEntry> ws_entry,
     WriteLogCacheEntry *pmem_entry) {
-  ws_entry->cache_buffer = D_RW(pmem_entry->write_data);
+  TOID(uint8_t) _write_data = pmem_entry->write_data;
+  ws_entry->cache_buffer = D_RW(_write_data);
 }
 
 /**
@@ -514,11 +518,13 @@ bool WriteLog<I>::retire_entries(const unsigned long int frees_per_tx) {
           D_RW(pool_root)->flushed_sync_gen = flushed_sync_gen;
         }
         D_RW(pool_root)->first_valid_entry = first_valid_entry;
+        TOID(uint8_t) _write_data;
         for (auto &entry: retiring_entries) {
           if (entry->write_bytes()) {
-            ldout(cct, 20) << "Freeing " << entry->ram_entry.write_data.oid.pool_uuid_lo
-                           << "." << entry->ram_entry.write_data.oid.off << dendl;
-            TX_FREE(entry->ram_entry.write_data);
+            ldout(cct, 20) << "Freeing " << entry->ram_entry.write_data.pool_uuid_lo
+                           << "." << entry->ram_entry.write_data.off << dendl;
+            _write_data = entry->ram_entry.write_data;
+            TX_FREE(_write_data);
           } else {
             ldout(cct, 20) << "Retiring non-write: " << *entry << dendl;
           }

@@ -49,9 +49,9 @@ void WriteLogEntry::init_bl(buffer::ptr &bp, buffer::list &bl) {
 
 void WriteLogEntry::init_cache_buffer(
     std::vector<WriteBufferAllocation>::iterator allocation) {
-  this->ram_entry.write_data = allocation->buffer_oid;
-  ceph_assert(!TOID_IS_NULL(this->ram_entry.write_data));
-  cache_buffer = D_RW(this->ram_entry.write_data);
+  ceph_assert(!TOID_IS_NULL(allocation->buffer_oid));
+  this->ram_entry.write_data = allocation->buffer_oid.oid;
+  cache_buffer = D_RW(allocation->buffer_oid);
 }
 
 buffer::list& WriteLogEntry::get_cache_bl() {
