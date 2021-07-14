@@ -193,4 +193,16 @@ bool PmemDev::is_pmem() {
   return m_is_pmem;
 }
 
+uint64_t PmemDev::get_first_data_bit() {
+  return m_first_data_bit;
+}
+
+uint64_t PmemDev::get_first_free_bit() {
+  return m_first_free_bit;
+}
+
+uint64_t PmemDev::get_first_valid_bit() {
+  return m_first_valid_bit;
+}
+
 } // namespace librbd::cache::pwl::rwl

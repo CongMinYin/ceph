@@ -26,6 +26,9 @@ class PmemDev {
                                 uint64_t last_retire_entry_size);
   char *get_head_addr();
   size_t get_mapped_len();
+  uint64_t get_first_data_bit();
+  uint64_t get_first_free_bit();
+  uint64_t get_first_valid_bit();
   bool is_pmem();
   PmemDev(const char * path, const uint64_t size, CephContext *cct);
   PmemDev(const char * path, CephContext *cct);

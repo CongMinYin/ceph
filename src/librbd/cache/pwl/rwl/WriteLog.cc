@@ -526,6 +526,8 @@ bool WriteLog<I>::retire_entries(const unsigned long int frees_per_tx) {
   GenericLogEntriesVector retiring_entries;
   uint32_t initial_first_valid_entry;
   uint32_t first_valid_entry;
+  uint64_t largest_addr = 0;
+  uint64_t write_bytes = 0;
 
   std::lock_guard retire_locker(this->m_log_retire_lock);
   ldout(cct, 20) << "Look for entries to retire" << dendl;
@@ -533,6 +535,53 @@ bool WriteLog<I>::retire_entries(const unsigned long int frees_per_tx) {
     /* Entry readers can't be added while we hold m_entry_reader_lock */
     RWLock::WLocker entry_reader_locker(this->m_entry_reader_lock);
     std::lock_guard locker(m_lock);
+
+    if (m_log_entries.empty()) {
+      return false;
+    }
+    unsigned long int frees_per_tx = 0;
+    uint64_t first_valid_bit = m_log_pool->get_first_valid_bit();
+    /* Look for sync point */
+    // 是否有简便方法，直接招syncpoint，然后看对应的entry，是否can_retire,
+    // 然后分为没有syncpoint和还没写回，不能retire
+    for (auto &log_entry : m_log_entries) {
+      if (!this->can_retire_entry(log_entry)) {
+        frees_per_tx = 0;
+        break;
+      }
+      if (!log_entry->is_sync_point()) {
+        ++frees_per_tx;
+        if (log_entry->is_write_entry() || log_entry->is_writesame_entry()) {
+          if (log_entry->ram_entry.write_data > largest_addr) {
+            if (largest_addr == 0) {
+              largest_addr = log_entry->ram_entry.write_data;
+              write_bytes = log_entry->ram_entry.write_bytes;
+            } else if ((log_entry->ram_entry.write_data >= first_valid_bit &&
+                        largest_addr >= first_valid_bit) ||
+                       (log_entry->ram_entry.write_data < first_valid_bit &&
+                        largest_addr < first_valid_bit)) {
+              largest_addr = log_entry->ram_entry.write_data;
+              write_bytes = log_entry->ram_entry.write_bytes;
+            }
+          } else if (log_entry->ram_entry.write_data < first_valid_bit &&
+                  largest_addr >= first_valid_bit) {
+            largest_addr = log_entry->ram_entry.write_data;
+            write_bytes = log_entry->ram_entry.write_bytes;
+          }
+        } else {
+          /* do nothing for discard entry*/
+        }
+      } else {
+        /* This log entry is sync ponit entry */
+        ++frees_per_tx;
+        break;
+      }
+    }
+    if (frees_per_tx == m_log_entries.size() &&
+        !m_log_entries.back()->is_sync_point()) {
+      frees_per_tx = 0;
+    }
+
     initial_first_valid_entry = this->m_first_valid_entry;
     first_valid_entry = this->m_first_valid_entry;
     auto entry = m_log_entries.empty() ? nullptr : m_log_entries.front();
@@ -570,18 +619,9 @@ bool WriteLog<I>::retire_entries(const unsigned long int frees_per_tx) {
       {
         /* Find the first entry that points to a valid address through
          * the reverse iterator */
-        GenericLogEntriesVector::reverse_iterator entry_iter;
-        for(entry_iter = retiring_entries.rbegin();
-            entry_iter != retiring_entries.rend(); ++entry_iter) {
-          if ((*entry_iter)->ram_entry.write_bytes != 0) {
-            m_log_pool->release_to_here((*entry_iter)->ram_entry.write_data,
-                                        (*entry_iter)->ram_entry.write_bytes);
-            ldout(cct, 20) << "Retire to entry index: "
-                           << (*entry_iter)->log_entry_index << dendl;
-            break;
-          }
-        }
-        if (entry_iter == retiring_entries.rend()) {
+        if (largest_addr != 0) {
+          m_log_pool->release_to_here(largest_addr, write_bytes);
+        } else {
           ldout(cct, 20) << "Only retiring non-write entries" << dendl;
         }
         persist_pmem_root();
